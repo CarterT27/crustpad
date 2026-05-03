@@ -46,6 +46,63 @@ describe("Room", () => {
     });
   });
 
+  test("rejects edits from future revisions without changing state", () => {
+    const room = new Room("test");
+    const ws = socket();
+
+    expect(() =>
+      room.handle(
+        ws as never,
+        JSON.stringify({
+          type: "edit",
+          revision: 1,
+          operation: [{ type: "insert", text: "stale" }],
+        }),
+      ),
+    ).toThrow("invalid revision 1");
+    expect(room.text).toBe("");
+    expect(room.revision).toBe(0);
+    expect(room.operations).toEqual([]);
+  });
+
+  test("clears presence and cursor state when a collaborator disconnects", () => {
+    const room = new Room("test");
+    const first = socket();
+    const second = socket();
+    room.connect(first as never);
+    room.connect(second as never);
+    first.sent = [];
+    second.sent = [];
+
+    room.handle(
+      first as never,
+      JSON.stringify({
+        type: "clientInfo",
+        info: { name: "Ada", hue: 120 },
+      }),
+    );
+    room.handle(
+      first as never,
+      JSON.stringify({
+        type: "cursorData",
+        data: { cursors: [0], selections: [] },
+      }),
+    );
+
+    expect(room.users.size).toBe(1);
+    expect(room.cursors.size).toBe(1);
+
+    room.disconnect(first as never);
+
+    expect(room.users.size).toBe(0);
+    expect(room.cursors.size).toBe(0);
+    expect(JSON.parse(second.sent.at(-1) ?? "")).toEqual({
+      type: "userInfo",
+      id: 0,
+      info: null,
+    });
+  });
+
   test("rejects user info outside protocol bounds", () => {
     const room = new Room("test");
     const ws = socket();
