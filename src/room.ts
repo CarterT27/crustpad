@@ -4,6 +4,7 @@ import type {
   ClientMsg,
   CursorData,
   LanguageId,
+  PersistedDocument,
   ServerMsg,
   UserId,
   UserInfo,
@@ -31,8 +32,15 @@ export class Room {
   private nextUserId = 0;
   private readonly sockets = new Set<ServerWebSocket<SocketData>>();
 
-  constructor(id: string) {
+  constructor(id: string, persisted?: PersistedDocument) {
     this.id = id;
+    if (persisted) {
+      this.text = persisted.text;
+      this.language = persisted.language;
+      const operation = normalize([{ type: "insert", text: persisted.text }]);
+      this.operations.push({ id: Number.MAX_SAFE_INTEGER, operation });
+      this.revision = this.operations.length;
+    }
   }
 
   connect(ws: ServerWebSocket<SocketData>): void {
@@ -101,6 +109,13 @@ export class Room {
         this.broadcast({ type: "userCursor", id: userId, data: message.data });
         break;
     }
+  }
+
+  snapshot(): PersistedDocument {
+    return {
+      text: this.text,
+      language: this.language,
+    };
   }
 
   private applyEdit(

@@ -33,6 +33,11 @@ export type ServerMsg =
   | { type: "userInfo"; id: UserId; info: UserInfo | null }
   | { type: "userCursor"; id: UserId; data: CursorData };
 
+export type PersistedDocument = {
+  text: string;
+  language: LanguageId;
+};
+
 export function isLanguageId(value: unknown): value is LanguageId {
   return typeof value === "string" && languages.includes(value as LanguageId);
 }

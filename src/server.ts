@@ -1,9 +1,12 @@
+import { DocumentStore } from "./database";
 import { Room, type SocketData } from "./room";
 
 const port = Number.parseInt(process.env.PORT ?? "3030", 10);
 const expiryDays = Number.parseInt(process.env.EXPIRY_DAYS ?? "1", 10);
 const startTime = Math.floor(Date.now() / 1000);
+const store = new DocumentStore();
 const rooms = new Map<string, Room>();
+const persisters = new Map<string, Timer>();
 
 function getRoom(id: string): Room {
   const existing = rooms.get(id);
@@ -12,9 +15,34 @@ function getRoom(id: string): Room {
     return existing;
   }
 
-  const room = new Room(id);
+  const room = new Room(id, store.load(id));
   rooms.set(id, room);
+  startPersister(id, room);
   return room;
+}
+
+function startPersister(id: string, room: Room): void {
+  let lastRevision = room.revision;
+  const timer = setInterval(() => {
+    if (room.revision <= lastRevision) {
+      return;
+    }
+
+    store.store(id, room.snapshot());
+    lastRevision = room.revision;
+  }, 3_000);
+  timer.unref();
+  persisters.set(id, timer);
+}
+
+function removeRoom(id: string, room: Room): void {
+  store.store(id, room.snapshot());
+  rooms.delete(id);
+  const timer = persisters.get(id);
+  if (timer) {
+    clearInterval(timer);
+    persisters.delete(id);
+  }
 }
 
 setInterval(
@@ -25,7 +53,7 @@ setInterval(
         continue;
       }
 
-      rooms.delete(id);
+      removeRoom(id, room);
     }
   },
   60 * 60 * 1_000,
@@ -57,6 +85,7 @@ const server = Bun.serve<SocketData>({
       return Response.json({
         startTime,
         numDocuments: rooms.size,
+        databaseSize: store.count(),
       });
     }
 

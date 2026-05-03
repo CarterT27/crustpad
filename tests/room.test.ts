@@ -11,4 +11,22 @@ describe("Room", () => {
     expect(room.text).toBe("xyzabc");
     expect(room.revision).toBe(2);
   });
+
+  test("loads persisted text as a synthetic insert operation", () => {
+    const room = new Room("saved", {
+      text: "hello",
+      language: "typescript",
+    });
+
+    expect(room.text).toBe("hello");
+    expect(room.language).toBe("typescript");
+    expect(room.revision).toBe(1);
+    expect(room.operations).toEqual([
+      { id: Number.MAX_SAFE_INTEGER, operation: [{ type: "insert", text: "hello" }] },
+    ]);
+    expect(room.snapshot()).toEqual({
+      text: "hello",
+      language: "typescript",
+    });
+  });
 });
