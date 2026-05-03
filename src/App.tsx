@@ -20,6 +20,8 @@ import { useSyncSession } from "./useSyncSession";
 
 function tabSizeForLanguage(language: LanguageId): number {
   switch (language) {
+    case "c":
+    case "cpp":
     case "javascript":
     case "typescript":
       return 2;
@@ -77,6 +79,8 @@ export default function App() {
     }
 
     const extension = {
+      c: "c",
+      cpp: "cpp",
       javascript: "js",
       plaintext: "txt",
       python: "py",

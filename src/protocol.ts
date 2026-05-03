@@ -1,6 +1,13 @@
 import type { OperationSeq } from "./ot";
 
-export const languages = ["javascript", "typescript", "python", "plaintext"] as const;
+export const languages = [
+  "c",
+  "cpp",
+  "javascript",
+  "typescript",
+  "python",
+  "plaintext",
+] as const;
 
 export type LanguageId = (typeof languages)[number];
 export type UserId = number;

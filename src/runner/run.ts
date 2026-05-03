@@ -1,4 +1,6 @@
 import type { LanguageId } from "../protocol";
+import CWorker from "./c.worker?worker";
+import CppWorker from "./cpp.worker?worker";
 import JavaScriptWorker from "./js.worker?worker";
 import PythonWorker from "./python.worker?worker";
 import TypeScriptWorker from "./ts.worker?worker";
@@ -9,8 +11,11 @@ export type { RunResult };
 const defaultOutputLimit = 64 * 1024;
 const defaultTimeoutMs = 15_000;
 const defaultSetupTimeoutMs = 60_000;
+const defaultCppSetupTimeoutMs = 180_000;
 
 const workerFactories: Record<RunnableLanguage, () => Worker> = {
+  c: () => new CWorker(),
+  cpp: () => new CppWorker(),
   javascript: () => new JavaScriptWorker(),
   python: () => new PythonWorker(),
   typescript: () => new TypeScriptWorker(),
@@ -47,6 +52,10 @@ export function runCode({
   }
 
   return new Promise((resolve) => {
+    const effectiveSetupTimeoutMs =
+      language === "cpp" && setupTimeoutMs === defaultSetupTimeoutMs
+        ? defaultCppSetupTimeoutMs
+        : setupTimeoutMs;
     const worker = workerForLanguage(language);
     const setupStartedAt = performance.now();
     let executionStartedAt = setupStartedAt;
@@ -93,10 +102,10 @@ export function runCode({
         durationMs: performance.now() - setupStartedAt,
         timedOut: true,
         error: `Runner initialization timed out after ${Math.round(
-          setupTimeoutMs / 1000,
+          effectiveSetupTimeoutMs / 1000,
         )} seconds.`,
       });
-    }, setupTimeoutMs);
+    }, effectiveSetupTimeoutMs);
 
     const startExecutionTimer = () => {
       if (executionTimer !== undefined) {

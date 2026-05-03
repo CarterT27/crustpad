@@ -21,6 +21,24 @@ declare module "*?worker" {
   export default workerConstructor;
 }
 
+declare module "picoc-web" {
+  export function RunDefault(sourceCode: string): Promise<{
+    stdout: string;
+    stderr: string;
+  }>;
+}
+
+declare module "@eduoj/wasm-clang" {
+  export class API {
+    constructor(options: {
+      cdnUrl?: string;
+      hostWrite?: (text: string) => void;
+      readBuffer?: (url: string) => Promise<ArrayBuffer>;
+      compileStreaming?: (url: string) => Promise<WebAssembly.Module>;
+    });
+  }
+}
+
 declare namespace JSX {
   type Element = import("react").ReactElement;
 }

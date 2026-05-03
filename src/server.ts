@@ -171,24 +171,30 @@ async function staticAssetResponse(pathname: string): Promise<Response | undefin
   }
 
   const headers = new Headers();
-  if (isJavaScriptRunnerWorker(path)) {
-    headers.set(
-      "content-security-policy",
-      [
-        "default-src 'none'",
-        "script-src 'self' blob: 'wasm-unsafe-eval'",
-        "connect-src 'self'",
-        "worker-src 'none'",
-        "object-src 'none'",
-        "base-uri 'none'",
-        "form-action 'none'",
-      ].join("; "),
-    );
+  const workerCsp = runnerWorkerCsp(path);
+  if (workerCsp) {
+    headers.set("content-security-policy", workerCsp);
   }
 
   return new Response(file, { headers });
 }
 
-function isJavaScriptRunnerWorker(path: string): boolean {
-  return /^assets\/(?:js|ts)\.worker-[\w-]+\.js$/.test(path);
+function runnerWorkerCsp(path: string): string | undefined {
+  const match = /^assets\/(c|cpp|js|ts)\.worker-[\w-]+\.js$/.exec(path);
+  if (!match) {
+    return undefined;
+  }
+
+  const connectSrc =
+    match[1] === "cpp" ? "connect-src 'self' https://cdn.jsdelivr.net" : "connect-src 'self'";
+
+  return [
+    "default-src 'none'",
+    "script-src 'self' blob: 'wasm-unsafe-eval'",
+    connectSrc,
+    "worker-src 'none'",
+    "object-src 'none'",
+    "base-uri 'none'",
+    "form-action 'none'",
+  ].join("; ");
 }
