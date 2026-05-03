@@ -65,6 +65,36 @@ describe("Room", () => {
     expect(room.operations).toEqual([]);
   });
 
+  test("rejects malformed edit operations before applying OT", () => {
+    const invalidOperations = [
+      [{ type: "retain", count: -1 }],
+      [{ type: "delete", count: 1.5 }],
+      [{ type: "insert", text: 42 }],
+      [{ type: "replace", text: "x" }],
+      [null],
+    ];
+
+    for (const operation of invalidOperations) {
+      const room = new Room("test");
+      const ws = socket();
+
+      room.handle(
+        ws as never,
+        JSON.stringify({
+          type: "edit",
+          revision: 0,
+          operation,
+        }),
+      );
+
+      expect(ws.closeCode).toBe(1003);
+      expect(ws.closeReason).toBe("invalid message");
+      expect(room.text).toBe("");
+      expect(room.revision).toBe(0);
+      expect(room.operations).toEqual([]);
+    }
+  });
+
   test("clears presence and cursor state when a collaborator disconnects", () => {
     const room = new Room("test");
     const first = socket();

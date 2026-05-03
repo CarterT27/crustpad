@@ -1,4 +1,5 @@
 import { apply, normalize, targetLength, transform, transformIndex } from "./ot";
+import type { OperationSeq } from "./ot";
 import type {
   ClientMsg,
   CursorData,
@@ -216,7 +217,7 @@ function parseClientMsg(raw: string, documentLength: number): ClientMsg | undefi
     case "edit":
       if (
         Number.isSafeInteger(message.revision) &&
-        Array.isArray(message.operation)
+        isOperationSeq(message.operation)
       ) {
         return message;
       }
@@ -229,6 +230,31 @@ function parseClientMsg(raw: string, documentLength: number): ClientMsg | undefi
       return isCursorData(message.data, documentLength) ? message : undefined;
     default:
       return undefined;
+  }
+}
+
+function isOperationSeq(value: unknown): value is OperationSeq {
+  return Array.isArray(value) && value.every(isOperationComponent);
+}
+
+function isOperationComponent(value: unknown): value is OperationSeq[number] {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const component = value as Partial<OperationSeq[number]>;
+  switch (component.type) {
+    case "retain":
+    case "delete":
+      return (
+        Number.isSafeInteger(component.count) &&
+        typeof component.count === "number" &&
+        component.count >= 0
+      );
+    case "insert":
+      return typeof component.text === "string";
+    default:
+      return false;
   }
 }
 
