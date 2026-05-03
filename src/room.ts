@@ -1,0 +1,209 @@
+import type { ServerWebSocket } from "bun";
+import { apply, normalize, targetLength, transform, transformIndex } from "./ot";
+import type {
+  ClientMsg,
+  CursorData,
+  LanguageId,
+  ServerMsg,
+  UserId,
+  UserInfo,
+  UserOperation,
+} from "./protocol";
+import { isLanguageId } from "./protocol";
+
+export type SocketData = {
+  roomId: string;
+  userId?: UserId;
+};
+
+const MAX_TARGET_LENGTH = 256 * 1024;
+
+export class Room {
+  readonly id: string;
+  text = "";
+  language: LanguageId = "plaintext";
+  revision = 0;
+  operations: UserOperation[] = [];
+  users = new Map<UserId, UserInfo>();
+  cursors = new Map<UserId, CursorData>();
+  lastAccessedAt = Date.now();
+
+  private nextUserId = 0;
+  private readonly sockets = new Set<ServerWebSocket<SocketData>>();
+
+  constructor(id: string) {
+    this.id = id;
+  }
+
+  connect(ws: ServerWebSocket<SocketData>): void {
+    const userId = this.nextUserId++;
+    ws.data.userId = userId;
+    this.sockets.add(ws);
+    this.touch();
+
+    this.send(ws, { type: "identity", id: userId });
+    if (this.operations.length > 0) {
+      this.send(ws, {
+        type: "history",
+        start: 0,
+        operations: this.operations,
+      });
+    }
+    this.send(ws, { type: "language", language: this.language });
+    for (const [id, info] of this.users) {
+      this.send(ws, { type: "userInfo", id, info });
+    }
+    for (const [id, data] of this.cursors) {
+      this.send(ws, { type: "userCursor", id, data });
+    }
+  }
+
+  disconnect(ws: ServerWebSocket<SocketData>): void {
+    this.sockets.delete(ws);
+    const userId = ws.data.userId;
+    if (userId === undefined) {
+      return;
+    }
+
+    this.users.delete(userId);
+    this.cursors.delete(userId);
+    this.broadcast({ type: "userInfo", id: userId, info: null });
+    this.touch();
+  }
+
+  handle(ws: ServerWebSocket<SocketData>, raw: string | Buffer): void {
+    const userId = ws.data.userId;
+    if (userId === undefined || typeof raw !== "string") {
+      return;
+    }
+
+    const message = parseClientMsg(raw);
+    if (!message) {
+      ws.close(1003, "invalid message");
+      return;
+    }
+
+    this.touch();
+    switch (message.type) {
+      case "edit":
+        this.applyEdit(userId, message.revision, message.operation);
+        break;
+      case "setLanguage":
+        this.language = message.language;
+        this.broadcast({ type: "language", language: message.language });
+        break;
+      case "clientInfo":
+        this.users.set(userId, message.info);
+        this.broadcast({ type: "userInfo", id: userId, info: message.info });
+        break;
+      case "cursorData":
+        this.cursors.set(userId, message.data);
+        this.broadcast({ type: "userCursor", id: userId, data: message.data });
+        break;
+    }
+  }
+
+  private applyEdit(
+    userId: UserId,
+    revision: number,
+    incoming: UserOperation["operation"],
+  ): void {
+    if (!Number.isSafeInteger(revision) || revision < 0 || revision > this.revision) {
+      throw new Error(`invalid revision ${revision}`);
+    }
+
+    let operation = normalize(incoming);
+    for (const historyOp of this.operations.slice(revision)) {
+      operation = transform(operation, historyOp.operation)[0];
+    }
+
+    if (targetLength(operation) > MAX_TARGET_LENGTH) {
+      throw new Error("document exceeds maximum length");
+    }
+
+    const nextText = apply(this.text, operation);
+    for (const data of this.cursors.values()) {
+      data.cursors = data.cursors.map((cursor) => transformIndex(operation, cursor));
+      data.selections = data.selections.map(([start, end]) => [
+        transformIndex(operation, start),
+        transformIndex(operation, end),
+      ]);
+    }
+
+    const userOperation = { id: userId, operation };
+    this.operations.push(userOperation);
+    this.revision = this.operations.length;
+    this.text = nextText;
+    this.broadcast({
+      type: "history",
+      start: this.revision - 1,
+      operations: [userOperation],
+    });
+  }
+
+  private broadcast(message: ServerMsg): void {
+    for (const socket of this.sockets) {
+      this.send(socket, message);
+    }
+  }
+
+  private send(ws: ServerWebSocket<SocketData>, message: ServerMsg): void {
+    ws.send(JSON.stringify(message));
+  }
+
+  private touch(): void {
+    this.lastAccessedAt = Date.now();
+  }
+}
+
+function parseClientMsg(raw: string): ClientMsg | undefined {
+  const value: unknown = JSON.parse(raw);
+  if (!value || typeof value !== "object" || !("type" in value)) {
+    return undefined;
+  }
+
+  const message = value as ClientMsg;
+  switch (message.type) {
+    case "edit":
+      if (
+        Number.isSafeInteger(message.revision) &&
+        Array.isArray(message.operation)
+      ) {
+        return message;
+      }
+      return undefined;
+    case "setLanguage":
+      return isLanguageId(message.language) ? message : undefined;
+    case "clientInfo":
+      return isUserInfo(message.info) ? message : undefined;
+    case "cursorData":
+      return isCursorData(message.data) ? message : undefined;
+    default:
+      return undefined;
+  }
+}
+
+function isUserInfo(value: unknown): value is UserInfo {
+  return (
+    !!value &&
+    typeof value === "object" &&
+    typeof (value as UserInfo).name === "string" &&
+    Number.isSafeInteger((value as UserInfo).hue)
+  );
+}
+
+function isCursorData(value: unknown): value is CursorData {
+  return (
+    !!value &&
+    typeof value === "object" &&
+    Array.isArray((value as CursorData).cursors) &&
+    (value as CursorData).cursors.every(Number.isSafeInteger) &&
+    Array.isArray((value as CursorData).selections) &&
+    (value as CursorData).selections.every(
+      (selection) =>
+        Array.isArray(selection) &&
+        selection.length === 2 &&
+        selection.every(Number.isSafeInteger),
+    )
+  );
+}

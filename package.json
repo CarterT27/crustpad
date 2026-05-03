@@ -4,6 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "dev": "bun --watch src/server.ts",
+    "start": "bun src/server.ts",
     "test": "bun test"
   }
 }
