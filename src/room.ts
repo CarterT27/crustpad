@@ -1,4 +1,3 @@
-import type { ServerWebSocket } from "bun";
 import { apply, normalize, targetLength, transform, transformIndex } from "./ot";
 import type {
   ClientMsg,
@@ -15,6 +14,12 @@ import { isLanguageId } from "./protocol";
 export type SocketData = {
   roomId: string;
   userId?: UserId;
+};
+
+export type RoomSocket = {
+  data: SocketData;
+  send(message: string): void;
+  close(code: number, reason: string): void;
 };
 
 const MAX_TARGET_LENGTH = 256 * 1024;
@@ -35,7 +40,7 @@ export class Room {
   lastAccessedAt = Date.now();
 
   private nextUserId = 0;
-  private readonly sockets = new Set<ServerWebSocket<SocketData>>();
+  private readonly sockets = new Set<RoomSocket>();
 
   constructor(id: string, persisted?: PersistedDocument) {
     this.id = id;
@@ -52,10 +57,11 @@ export class Room {
     return this.sockets.size;
   }
 
-  connect(ws: ServerWebSocket<SocketData>): void {
+  connect(ws: RoomSocket): void {
     const userId = this.nextUserId++;
     ws.data.userId = userId;
     this.sockets.add(ws);
+    this.restoreUserId(userId);
     this.touch();
 
     this.send(ws, { type: "identity", id: userId });
@@ -73,7 +79,7 @@ export class Room {
     }
   }
 
-  disconnect(ws: ServerWebSocket<SocketData>): void {
+  disconnect(ws: RoomSocket): void {
     this.sockets.delete(ws);
     const userId = ws.data.userId;
     if (userId === undefined) {
@@ -86,7 +92,24 @@ export class Room {
     this.touch();
   }
 
-  handle(ws: ServerWebSocket<SocketData>, raw: string | Buffer): void {
+  restoreSocket(ws: RoomSocket, info?: UserInfo, cursor?: CursorData): void {
+    const userId = ws.data.userId;
+    if (userId === undefined) {
+      return;
+    }
+
+    this.sockets.add(ws);
+    this.restoreUserId(userId);
+    if (info) {
+      this.users.set(userId, info);
+    }
+    if (cursor) {
+      this.cursors.set(userId, cursor);
+    }
+    this.touch();
+  }
+
+  handle(ws: RoomSocket, raw: unknown): void {
     const userId = ws.data.userId;
     if (userId === undefined || typeof raw !== "string") {
       return;
@@ -169,8 +192,12 @@ export class Room {
     }
   }
 
-  private send(ws: ServerWebSocket<SocketData>, message: ServerMsg): void {
+  private send(ws: RoomSocket, message: ServerMsg): void {
     ws.send(JSON.stringify(message));
+  }
+
+  private restoreUserId(userId: UserId): void {
+    this.nextUserId = Math.max(this.nextUserId, userId + 1);
   }
 
   private touch(): void {

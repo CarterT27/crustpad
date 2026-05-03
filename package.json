@@ -5,10 +5,12 @@
   "type": "module",
   "scripts": {
     "build": "vite build",
-    "dev": "bun run dev:server & bun run dev:client",
+    "check": "bunx tsc --noEmit && bunx tsc --project tsconfig.worker.json",
+    "deploy": "bun run build && wrangler deploy",
+    "dev": "bun run build && wrangler dev",
     "dev:client": "vite --host 0.0.0.0",
-    "dev:server": "bun --watch src/server.ts",
-    "start": "bun src/server.ts",
+    "dev:server": "wrangler dev",
+    "start": "wrangler dev",
     "test": "bun test"
   },
   "dependencies": {
@@ -24,8 +26,10 @@
     "vite": "^8.0.10"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260503.1",
     "@types/lodash.debounce": "^4.0.9",
     "@types/react": "^19.2.14",
-    "@types/react-dom": "^19.2.3"
+    "@types/react-dom": "^19.2.3",
+    "wrangler": "^4.87.0"
   }
 }
