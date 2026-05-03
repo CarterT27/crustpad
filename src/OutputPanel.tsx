@@ -16,6 +16,11 @@ export function OutputPanel({ result }: { result: RunPanelState }) {
   const stdout = "stdout" in result ? result.stdout : "";
   const stderr = "stderr" in result ? result.stderr : "";
   const error = "error" in result ? result.error : undefined;
+  const sections = [
+    { title: "stdout", value: stdout },
+    { title: "stderr", value: stderr },
+    { title: "error", value: error ?? "" },
+  ].filter((section) => section.value.length > 0);
 
   return (
     <section className="output-panel">
@@ -29,19 +34,19 @@ export function OutputPanel({ result }: { result: RunPanelState }) {
         </div>
       </div>
 
-      <div className="output-streams">
-        <OutputStream title="stdout" value={stdout} />
-        <OutputStream title="stderr" value={stderr} />
-        <OutputStream title="errors" value={error ?? ""} />
+      <div className="output-box">
+        {sections.map((section) => (
+          <OutputSection key={section.title} title={section.title} value={section.value} />
+        ))}
       </div>
     </section>
   );
 }
 
-function OutputStream({ title, value }: { title: string; value: string }) {
+function OutputSection({ title, value }: { title: string; value: string }) {
   return (
-    <div className="output-stream">
-      <div className="output-stream-title">{title}</div>
+    <div className="output-section">
+      <div className="output-section-title">{title}</div>
       <pre>{value || ""}</pre>
     </div>
   );
