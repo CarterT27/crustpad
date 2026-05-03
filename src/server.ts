@@ -7,6 +7,7 @@ const startTime = Math.floor(Date.now() / 1000);
 const store = new DocumentStore();
 const rooms = new Map<string, Room>();
 const persisters = new Map<string, Timer>();
+const publicDir = new URL("../dist/", import.meta.url);
 
 function getRoom(id: string): Room {
   const existing = rooms.get(id);
@@ -61,7 +62,7 @@ setInterval(
 
 const server = Bun.serve<SocketData>({
   port,
-  fetch(request, server) {
+  async fetch(request, server) {
     const url = new URL(request.url);
 
     const socketMatch = url.pathname.match(/^\/api\/socket\/([^/]+)$/);
@@ -89,6 +90,11 @@ const server = Bun.serve<SocketData>({
       });
     }
 
+    const assetResponse = await staticAssetResponse(url.pathname);
+    if (assetResponse) {
+      return assetResponse;
+    }
+
     return new Response("Not found", { status: 404 });
   },
   websocket: {
@@ -110,3 +116,17 @@ const server = Bun.serve<SocketData>({
 });
 
 console.log(`crustpad listening on http://localhost:${server.port}`);
+
+async function staticAssetResponse(pathname: string): Promise<Response | undefined> {
+  const normalizedPath = pathname === "/" ? "/index.html" : pathname;
+  const path = normalizedPath.startsWith("/assets/")
+    ? normalizedPath.slice(1)
+    : "index.html";
+  const file = Bun.file(new URL(path, publicDir));
+
+  if (!(await file.exists())) {
+    return undefined;
+  }
+
+  return new Response(file);
+}

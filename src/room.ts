@@ -18,6 +18,11 @@ export type SocketData = {
 };
 
 const MAX_TARGET_LENGTH = 256 * 1024;
+const MAX_USER_NAME_LENGTH = 25;
+const MIN_USER_HUE = 0;
+const MAX_USER_HUE = 359;
+const MAX_CURSORS = 16;
+const MAX_SELECTIONS = 16;
 
 export class Room {
   readonly id: string;
@@ -50,13 +55,11 @@ export class Room {
     this.touch();
 
     this.send(ws, { type: "identity", id: userId });
-    if (this.operations.length > 0) {
-      this.send(ws, {
-        type: "history",
-        start: 0,
-        operations: this.operations,
-      });
-    }
+    this.send(ws, {
+      type: "history",
+      start: 0,
+      operations: this.operations,
+    });
     this.send(ws, { type: "language", language: this.language });
     for (const [id, info] of this.users) {
       this.send(ws, { type: "userInfo", id, info });
@@ -85,7 +88,7 @@ export class Room {
       return;
     }
 
-    const message = parseClientMsg(raw);
+    const message = parseClientMsg(raw, Array.from(this.text).length);
     if (!message) {
       ws.close(1003, "invalid message");
       return;
@@ -171,7 +174,7 @@ export class Room {
   }
 }
 
-function parseClientMsg(raw: string): ClientMsg | undefined {
+function parseClientMsg(raw: string, documentLength: number): ClientMsg | undefined {
   const value: unknown = JSON.parse(raw);
   if (!value || typeof value !== "object" || !("type" in value)) {
     return undefined;
@@ -192,33 +195,60 @@ function parseClientMsg(raw: string): ClientMsg | undefined {
     case "clientInfo":
       return isUserInfo(message.info) ? message : undefined;
     case "cursorData":
-      return isCursorData(message.data) ? message : undefined;
+      return isCursorData(message.data, documentLength) ? message : undefined;
     default:
       return undefined;
   }
 }
 
 function isUserInfo(value: unknown): value is UserInfo {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const { name, hue } = value as Partial<UserInfo>;
   return (
-    !!value &&
-    typeof value === "object" &&
-    typeof (value as UserInfo).name === "string" &&
-    Number.isSafeInteger((value as UserInfo).hue)
+    typeof name === "string" &&
+    name.length > 0 &&
+    name.length <= MAX_USER_NAME_LENGTH &&
+    isUserHue(hue)
   );
 }
 
-function isCursorData(value: unknown): value is CursorData {
+function isUserHue(value: unknown): value is number {
+  return (
+    Number.isSafeInteger(value) &&
+    typeof value === "number" &&
+    value >= MIN_USER_HUE &&
+    value <= MAX_USER_HUE
+  );
+}
+
+function isDocumentOffset(value: unknown, documentLength: number): value is number {
+  return (
+    Number.isSafeInteger(value) &&
+    typeof value === "number" &&
+    value >= 0 &&
+    value <= documentLength
+  );
+}
+
+function isCursorData(value: unknown, documentLength: number): value is CursorData {
   return (
     !!value &&
     typeof value === "object" &&
     Array.isArray((value as CursorData).cursors) &&
-    (value as CursorData).cursors.every(Number.isSafeInteger) &&
+    (value as CursorData).cursors.length <= MAX_CURSORS &&
+    (value as CursorData).cursors.every((cursor) =>
+      isDocumentOffset(cursor, documentLength),
+    ) &&
     Array.isArray((value as CursorData).selections) &&
+    (value as CursorData).selections.length <= MAX_SELECTIONS &&
     (value as CursorData).selections.every(
       (selection) =>
         Array.isArray(selection) &&
         selection.length === 2 &&
-        selection.every(Number.isSafeInteger),
+        selection.every((offset) => isDocumentOffset(offset, documentLength)),
     )
   );
 }

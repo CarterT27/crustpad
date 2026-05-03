@@ -1,6 +1,22 @@
 import { describe, expect, test } from "bun:test";
 import { Room } from "../src/room";
 
+function socket(userId = 1) {
+  return {
+    data: { roomId: "test", userId },
+    sent: [] as string[],
+    closeCode: undefined as number | undefined,
+    closeReason: undefined as string | undefined,
+    send(message: string) {
+      this.sent.push(message);
+    },
+    close(code: number, reason: string) {
+      this.closeCode = code;
+      this.closeReason = reason;
+    },
+  };
+}
+
 describe("Room", () => {
   test("transforms edits sent from stale revisions", () => {
     const room = new Room("test");
@@ -28,5 +44,64 @@ describe("Room", () => {
       text: "hello",
       language: "typescript",
     });
+  });
+
+  test("rejects user info outside protocol bounds", () => {
+    const room = new Room("test");
+    const ws = socket();
+
+    room.handle(
+      ws as never,
+      JSON.stringify({
+        type: "clientInfo",
+        info: { name: "x".repeat(26), hue: 120 },
+      }),
+    );
+    expect(ws.closeCode).toBe(1003);
+    expect(room.users.size).toBe(0);
+
+    const second = socket();
+    room.handle(
+      second as never,
+      JSON.stringify({
+        type: "clientInfo",
+        info: { name: "Ada", hue: 360 },
+      }),
+    );
+    expect(second.closeCode).toBe(1003);
+    expect(room.users.size).toBe(0);
+  });
+
+  test("rejects oversized or out-of-range cursor data", () => {
+    const room = new Room("test");
+    room["applyEdit"](1, 0, [{ type: "insert", text: "abc" }]);
+
+    const tooManyCursors = socket();
+    room.handle(
+      tooManyCursors as never,
+      JSON.stringify({
+        type: "cursorData",
+        data: {
+          cursors: Array.from({ length: 17 }, () => 0),
+          selections: [],
+        },
+      }),
+    );
+    expect(tooManyCursors.closeCode).toBe(1003);
+    expect(room.cursors.size).toBe(0);
+
+    const outOfRangeSelection = socket();
+    room.handle(
+      outOfRangeSelection as never,
+      JSON.stringify({
+        type: "cursorData",
+        data: {
+          cursors: [],
+          selections: [[0, 4]],
+        },
+      }),
+    );
+    expect(outOfRangeSelection.closeCode).toBe(1003);
+    expect(room.cursors.size).toBe(0);
   });
 });
