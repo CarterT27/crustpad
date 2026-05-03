@@ -2,24 +2,45 @@ import { DocumentStore } from "./database";
 import { Room, type SocketData } from "./room";
 
 const port = Number.parseInt(process.env.PORT ?? "3030", 10);
-const expiryDays = Number.parseInt(process.env.EXPIRY_DAYS ?? "1", 10);
+const expiryDays = parseExpiryDays(process.env.EXPIRY_DAYS);
+const expiryMs = expiryDays * 24 * 60 * 60 * 1_000;
+const persistedAccessTouchInterval = 5 * 60 * 1_000;
 const startTime = Math.floor(Date.now() / 1000);
 const store = new DocumentStore();
 const rooms = new Map<string, Room>();
 const persisters = new Map<string, Timer>();
+const persistedAccesses = new Map<string, number>();
 const publicDir = new URL("../dist/", import.meta.url);
 
 function getRoom(id: string): Room {
+  const now = Date.now();
   const existing = rooms.get(id);
   if (existing) {
-    existing.lastAccessedAt = Date.now();
+    existing.lastAccessedAt = now;
+    touchPersistedAccess(id, now);
     return existing;
   }
 
-  const room = new Room(id, store.load(id));
+  const persisted = store.load(id);
+  if (persisted) {
+    store.touch(id, now);
+    persistedAccesses.set(id, now);
+  }
+
+  const room = new Room(id, persisted);
   rooms.set(id, room);
   startPersister(id, room);
   return room;
+}
+
+function touchPersistedAccess(id: string, lastAccessedAt: number): void {
+  const lastPersistedAt = persistedAccesses.get(id) ?? 0;
+  if (lastAccessedAt - lastPersistedAt < persistedAccessTouchInterval) {
+    return;
+  }
+
+  store.touch(id, lastAccessedAt);
+  persistedAccesses.set(id, lastAccessedAt);
 }
 
 function startPersister(id: string, room: Room): void {
@@ -29,7 +50,8 @@ function startPersister(id: string, room: Room): void {
       return;
     }
 
-    store.store(id, room.snapshot());
+    store.store(id, room.snapshot(), room.lastAccessedAt);
+    persistedAccesses.set(id, room.lastAccessedAt);
     lastRevision = room.revision;
   }, 3_000);
   timer.unref();
@@ -37,7 +59,8 @@ function startPersister(id: string, room: Room): void {
 }
 
 function removeRoom(id: string, room: Room): void {
-  store.store(id, room.snapshot());
+  store.store(id, room.snapshot(), room.lastAccessedAt);
+  persistedAccesses.delete(id);
   rooms.delete(id);
   const timer = persisters.get(id);
   if (timer) {
@@ -46,19 +69,38 @@ function removeRoom(id: string, room: Room): void {
   }
 }
 
-setInterval(
-  () => {
-    const cutoff = Date.now() - expiryDays * 24 * 60 * 60 * 1_000;
-    for (const [id, room] of rooms) {
-      if (room.lastAccessedAt >= cutoff) {
-        continue;
-      }
-
-      removeRoom(id, room);
+function expireRoomsAndDocuments(): void {
+  const now = Date.now();
+  const cutoff = now - expiryMs;
+  for (const [id, room] of rooms) {
+    if (room.connectionCount > 0) {
+      room.lastAccessedAt = now;
+      touchPersistedAccess(id, now);
+      continue;
     }
-  },
-  60 * 60 * 1_000,
-).unref();
+
+    if (room.lastAccessedAt >= cutoff) {
+      continue;
+    }
+
+    removeRoom(id, room);
+  }
+
+  store.deleteExpired(cutoff, Array.from(rooms.keys()));
+}
+
+expireRoomsAndDocuments();
+setInterval(expireRoomsAndDocuments, 60 * 60 * 1_000).unref();
+
+function parseExpiryDays(value: string | undefined): number {
+  const fallback = 1;
+  if (value === undefined) {
+    return fallback;
+  }
+
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
 
 const server = Bun.serve<SocketData>({
   port,

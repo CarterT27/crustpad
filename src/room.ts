@@ -48,6 +48,10 @@ export class Room {
     }
   }
 
+  get connectionCount(): number {
+    return this.sockets.size;
+  }
+
   connect(ws: ServerWebSocket<SocketData>): void {
     const userId = this.nextUserId++;
     ws.data.userId = userId;

@@ -71,6 +71,7 @@ describe("Room", () => {
     const second = socket();
     room.connect(first as never);
     room.connect(second as never);
+    expect(room.connectionCount).toBe(2);
     first.sent = [];
     second.sent = [];
 
@@ -94,6 +95,7 @@ describe("Room", () => {
 
     room.disconnect(first as never);
 
+    expect(room.connectionCount).toBe(1);
     expect(room.users.size).toBe(0);
     expect(room.cursors.size).toBe(0);
     expect(JSON.parse(second.sent.at(-1) ?? "")).toEqual({
