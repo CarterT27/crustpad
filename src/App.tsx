@@ -63,6 +63,30 @@ export default function App() {
     setLanguage("typescript");
   };
 
+  const handleDownload = () => {
+    const value = editorInstance?.getModel()?.getValue();
+    if (value === undefined) {
+      return;
+    }
+
+    const extension = {
+      javascript: "js",
+      plaintext: "txt",
+      python: "py",
+      typescript: "ts",
+    }[language];
+    const blob = new Blob([value], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+
+    link.href = url;
+    link.download = `crustpad-${roomId}.${extension}`;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  };
+
   const openProfileEditor = () => {
     setDraftName(user.name);
     setDraftHue(user.hue);
@@ -98,6 +122,7 @@ export default function App() {
           remoteUsers={users}
           onChangeDarkMode={setDarkMode}
           onChangeLanguage={setLanguage}
+          onDownload={handleDownload}
           onEditUser={openProfileEditor}
           onLoadSource={handleLoadSource}
         />

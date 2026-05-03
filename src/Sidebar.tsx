@@ -1,5 +1,6 @@
 import {
   VscAccount,
+  VscCloudDownload,
   VscCircleFilled,
   VscRepo,
 } from "react-icons/vsc";
@@ -16,6 +17,7 @@ type SidebarProps = {
   remoteUsers: Record<number, UserInfo>;
   onChangeDarkMode: (darkMode: boolean) => void;
   onChangeLanguage: (language: LanguageId) => void;
+  onDownload: () => void;
   onEditUser: () => void;
   onLoadSource: () => void;
 };
@@ -29,6 +31,7 @@ export function Sidebar({
   remoteUsers,
   onChangeDarkMode,
   onChangeLanguage,
+  onDownload,
   onEditUser,
   onLoadSource,
 }: SidebarProps) {
@@ -60,6 +63,11 @@ export function Sidebar({
           </option>
         ))}
       </select>
+
+      <button className="sidebar-action" type="button" onClick={onDownload}>
+        <VscCloudDownload />
+        Download
+      </button>
 
       <h2>Share Link</h2>
       <div className="share-link">
@@ -95,7 +103,11 @@ export function Sidebar({
         that inspired the editor.
       </p>
 
-      <button className="read-code" type="button" onClick={onLoadSource}>
+      <button
+        className="sidebar-action read-code"
+        type="button"
+        onClick={onLoadSource}
+      >
         <VscRepo />
         Read the code
       </button>
