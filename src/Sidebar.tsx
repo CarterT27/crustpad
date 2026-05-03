@@ -42,6 +42,10 @@ export function Sidebar({
   runDisabled,
   running,
 }: SidebarProps) {
+  const handleCopyShareLink = () => {
+    void navigator.clipboard?.writeText(shareHref);
+  };
+
   return (
     <aside className="sidebar">
       <ConnectionStatus connection={connection} darkMode={darkMode} />
@@ -89,7 +93,10 @@ export function Sidebar({
       <h2>Share Link</h2>
       <div className="share-link">
         <input readOnly value={shareHref} />
-        <button type="button" onClick={() => navigator.clipboard.writeText(shareHref)}>
+        <button
+          type="button"
+          onClick={handleCopyShareLink}
+        >
           Copy
         </button>
       </div>
@@ -112,12 +119,11 @@ export function Sidebar({
         browser while seeing your changes in real time.
       </p>
       <p>
-        Built using Bun and TypeScript, with a collaboration model ported from
-        Rustpad. See the{" "}
-        <a href="https://github.com/ekzhang/rustpad" target="_blank">
+        Inspired by Rustpad. Built using Bun and TypeScript. See the{" "}
+        <a href="https://github.com/cartert27/crustpad" target="_blank">
           GitHub repository
         </a>{" "}
-        that inspired the editor.
+        for details.
       </p>
 
       <button

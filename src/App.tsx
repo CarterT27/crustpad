@@ -207,11 +207,16 @@ export default function App() {
 }
 
 function Footer() {
+  const localHosts = new Set(["localhost", "127.0.0.1", "[::1]"]);
+  const environment = localHosts.has(window.location.hostname)
+    ? "development"
+    : "production";
+
   return (
     <footer className="footer">
       <div className="footer-badge">
         <VscRemote />
-        <span>Crustpad (development)</span>
+        <span>Crustpad ({environment})</span>
       </div>
     </footer>
   );
