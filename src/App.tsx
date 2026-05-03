@@ -1,6 +1,6 @@
 import Editor, { type OnMount } from "@monaco-editor/react";
 import type { editor } from "monaco-editor";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   VscChevronRight,
   VscFolderOpened,
@@ -9,8 +9,10 @@ import {
 } from "react-icons/vsc";
 import useLocalStorageState from "use-local-storage-state";
 import { ProfilePopover } from "./ProfilePopover";
+import { OutputPanel, type RunPanelState } from "./OutputPanel";
 import { Sidebar } from "./Sidebar";
 import type { LanguageId } from "./protocol";
+import { canRunLanguage, runCode } from "./runner/run";
 import syncClientSource from "./syncClient.ts?raw";
 import { useRoomId } from "./useRoomId";
 import { useStoredUser } from "./userStorage";
@@ -38,6 +40,11 @@ export default function App() {
   const [editingMe, setEditingMe] = useState(false);
   const [draftName, setDraftName] = useState("");
   const [draftHue, setDraftHue] = useState(0);
+  const [runResult, setRunResult] = useState<RunPanelState>({
+    status: "idle",
+    language: "plaintext",
+  });
+  const runCounter = useRef(0);
   const { connection, language, users, setLanguage } = useSyncSession(
     editorInstance,
     roomId,
@@ -87,6 +94,26 @@ export default function App() {
     window.setTimeout(() => URL.revokeObjectURL(url), 0);
   };
 
+  const handleRun = async () => {
+    const model = editorInstance?.getModel();
+    if (!model || runResult.status === "running") {
+      return;
+    }
+
+    const runId = runCounter.current + 1;
+    runCounter.current = runId;
+    setRunResult({ status: "running", language });
+
+    const result = await runCode({
+      language,
+      source: model.getValue(),
+    });
+
+    if (runCounter.current === runId) {
+      setRunResult(result);
+    }
+  };
+
   const openProfileEditor = () => {
     setDraftName(user.name);
     setDraftHue(user.hue);
@@ -125,6 +152,9 @@ export default function App() {
           onDownload={handleDownload}
           onEditUser={openProfileEditor}
           onLoadSource={handleLoadSource}
+          onRun={handleRun}
+          runDisabled={!canRunLanguage(language) || runResult.status === "running"}
+          running={runResult.status === "running"}
         />
 
         <section className="main-pane">
@@ -159,6 +189,7 @@ export default function App() {
               onMount={handleMount}
             />
           </div>
+          <OutputPanel result={runResult} />
         </section>
       </div>
       <Footer />

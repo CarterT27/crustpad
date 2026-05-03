@@ -128,5 +128,25 @@ async function staticAssetResponse(pathname: string): Promise<Response | undefin
     return undefined;
   }
 
-  return new Response(file);
+  const headers = new Headers();
+  if (isJavaScriptRunnerWorker(path)) {
+    headers.set(
+      "content-security-policy",
+      [
+        "default-src 'none'",
+        "script-src 'self' blob: 'wasm-unsafe-eval'",
+        "connect-src 'self'",
+        "worker-src 'none'",
+        "object-src 'none'",
+        "base-uri 'none'",
+        "form-action 'none'",
+      ].join("; "),
+    );
+  }
+
+  return new Response(file, { headers });
+}
+
+function isJavaScriptRunnerWorker(path: string): boolean {
+  return /^assets\/(?:js|ts)\.worker-[\w-]+\.js$/.test(path);
 }

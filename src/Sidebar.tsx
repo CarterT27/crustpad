@@ -3,6 +3,7 @@ import {
   VscCloudDownload,
   VscCircleFilled,
   VscRepo,
+  VscRunAll,
 } from "react-icons/vsc";
 import type { LanguageId, UserInfo } from "./protocol";
 import { languages } from "./protocol";
@@ -20,6 +21,9 @@ type SidebarProps = {
   onDownload: () => void;
   onEditUser: () => void;
   onLoadSource: () => void;
+  onRun: () => void;
+  runDisabled: boolean;
+  running: boolean;
 };
 
 export function Sidebar({
@@ -34,6 +38,9 @@ export function Sidebar({
   onDownload,
   onEditUser,
   onLoadSource,
+  onRun,
+  runDisabled,
+  running,
 }: SidebarProps) {
   return (
     <aside className="sidebar">
@@ -63,6 +70,16 @@ export function Sidebar({
           </option>
         ))}
       </select>
+
+      <button
+        className="sidebar-action run-code"
+        type="button"
+        onClick={onRun}
+        disabled={runDisabled}
+      >
+        <VscRunAll />
+        {running ? "Running..." : "Run"}
+      </button>
 
       <button className="sidebar-action" type="button" onClick={onDownload}>
         <VscCloudDownload />

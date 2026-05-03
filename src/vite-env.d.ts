@@ -9,6 +9,18 @@ declare module "*?raw" {
   export default source;
 }
 
+declare module "*?url" {
+  const url: string;
+  export default url;
+}
+
+declare module "*?worker" {
+  const workerConstructor: {
+    new (): Worker;
+  };
+  export default workerConstructor;
+}
+
 declare namespace JSX {
   type Element = import("react").ReactElement;
 }
