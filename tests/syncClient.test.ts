@@ -15,6 +15,7 @@ type Change = {
 };
 
 let cleanupDom = () => {};
+const MONACO_KEY_CODE_Z = 56;
 
 afterEach(() => {
   cleanupDom();
@@ -228,6 +229,114 @@ describe("SyncClient collaborative editing", () => {
 
     client.dispose();
   });
+
+  test("transforms undo through later remote edits", () => {
+    installDom();
+    const editor = new FakeEditor();
+    const client = new SyncClient({
+      uri: "ws://example.test/api/socket/room",
+      editor: editor as never,
+    });
+    const ws = FakeWebSocket.instances[0];
+    ws.serverOpen();
+    ws.serverMessage({ type: "identity", id: 1 });
+    ws.serverMessage({
+      type: "history",
+      start: 0,
+      operations: [{ id: 2, operation: [{ type: "insert", text: "ab" }] }],
+    });
+
+    editor.localInsert(2, "X");
+    ws.serverMessage({
+      type: "history",
+      start: 1,
+      operations: [
+        {
+          id: 1,
+          operation: [
+            { type: "retain", count: 2 },
+            { type: "insert", text: "X" },
+          ],
+        },
+      ],
+    });
+    ws.serverMessage({
+      type: "history",
+      start: 2,
+      operations: [
+        {
+          id: 2,
+          operation: [
+            { type: "insert", text: "Z" },
+            { type: "retain", count: 3 },
+          ],
+        },
+      ],
+    });
+
+    editor.keyDown({ metaKey: true, keyCode: MONACO_KEY_CODE_Z });
+
+    expect(editor.model.getValue()).toBe("Zab");
+    expect(sentMessages(ws).at(-1)).toEqual({
+      type: "edit",
+      revision: 3,
+      operation: [
+        { type: "retain", count: 3 },
+        { type: "delete", count: 1 },
+      ],
+    });
+
+    ws.serverMessage({
+      type: "history",
+      start: 3,
+      operations: [
+        {
+          id: 1,
+          operation: [
+            { type: "retain", count: 3 },
+            { type: "delete", count: 1 },
+          ],
+        },
+      ],
+    });
+    editor.keyDown({ metaKey: true, shiftKey: true, keyCode: MONACO_KEY_CODE_Z });
+
+    expect(editor.model.getValue()).toBe("ZabX");
+    expect(sentMessages(ws).at(-1)).toEqual({
+      type: "edit",
+      revision: 4,
+      operation: [
+        { type: "retain", count: 3 },
+        { type: "insert", text: "X" },
+      ],
+    });
+
+    client.dispose();
+  });
+
+  test("keeps undo history when deleting a previous local insert", () => {
+    installDom();
+    const editor = new FakeEditor();
+    const client = new SyncClient({
+      uri: "ws://example.test/api/socket/room",
+      editor: editor as never,
+    });
+    const ws = FakeWebSocket.instances[0];
+    ws.serverOpen();
+    ws.serverMessage({ type: "identity", id: 1 });
+
+    editor.localInsert(0, "a");
+    editor.localInsert(0, "b");
+    editor.localDelete(0, 1);
+
+    editor.keyDown({ metaKey: true, keyCode: MONACO_KEY_CODE_Z });
+    editor.keyDown({ metaKey: true, keyCode: MONACO_KEY_CODE_Z });
+    editor.keyDown({ metaKey: true, keyCode: MONACO_KEY_CODE_Z });
+
+    expect(editor.model.getValue()).toBe("");
+
+    client.dispose();
+  });
 });
 
 function installDom() {
@@ -330,6 +439,7 @@ class FakeEditor {
   readonly model = new FakeModel();
   private readonly changeListeners = new Set<(event: { changes: Change[] }) => void>();
   private readonly cursorListeners = new Set<(event: unknown) => void>();
+  private readonly keyListeners = new Set<(event: FakeKeyEvent) => void>();
   private readonly selectionListeners = new Set<(event: unknown) => void>();
 
   getModel(): FakeModel {
@@ -338,6 +448,36 @@ class FakeEditor {
 
   localInsert(offset: number, text: string): void {
     this.localChange({ rangeOffset: offset, rangeLength: 0, text });
+  }
+
+  localDelete(offset: number, length: number): void {
+    this.localChange({ rangeOffset: offset, rangeLength: length, text: "" });
+  }
+
+  keyDown(event: Partial<FakeKeyEvent>): void {
+    const keyEvent = {
+      ctrlKey: false,
+      keyCode: 0,
+      metaKey: false,
+      shiftKey: false,
+      prevented: false,
+      stopped: false,
+      preventDefault() {
+        this.prevented = true;
+      },
+      stopPropagation() {
+        this.stopped = true;
+      },
+      ...event,
+    };
+    for (const listener of this.keyListeners) {
+      listener(keyEvent);
+    }
+  }
+
+  onKeyDown(listener: (event: FakeKeyEvent) => void) {
+    this.keyListeners.add(listener);
+    return disposable(() => this.keyListeners.delete(listener));
   }
 
   onDidChangeCursorPosition(listener: (event: unknown) => void) {
@@ -362,6 +502,17 @@ class FakeEditor {
     }
   }
 }
+
+type FakeKeyEvent = {
+  ctrlKey: boolean;
+  keyCode: number;
+  metaKey: boolean;
+  shiftKey: boolean;
+  prevented: boolean;
+  stopped: boolean;
+  preventDefault(): void;
+  stopPropagation(): void;
+};
 
 class FakeModel {
   applyEditsUndoFlags: unknown[] = [];

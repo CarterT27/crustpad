@@ -17,6 +17,9 @@ import type {
   UserOperation,
 } from "./protocol";
 
+const MONACO_KEY_CODE_Y = 55;
+const MONACO_KEY_CODE_Z = 56;
+
 export type SyncClientOptions = {
   uri: string;
   editor: editor.IStandaloneCodeEditor;
@@ -36,6 +39,7 @@ export class SyncClient {
   private readonly model: editor.ITextModel;
   private readonly onChangeHandle: IDisposable;
   private readonly onCursorHandle: IDisposable;
+  private readonly onKeyDownHandle: IDisposable;
   private readonly onSelectionHandle: IDisposable;
   private readonly beforeUnload: (event: BeforeUnloadEvent) => void;
   private readonly tryConnectId: number;
@@ -45,6 +49,8 @@ export class SyncClient {
   private revision = 0;
   private outstanding?: OperationSeq;
   private buffer?: OperationSeq;
+  private undoStack: OperationSeq[] = [];
+  private redoStack: OperationSeq[] = [];
   private users: Record<number, UserInfo> = {};
   private userCursors: Record<number, CursorData> = {};
   private myInfo?: UserInfo;
@@ -65,6 +71,26 @@ export class SyncClient {
     this.onChangeHandle = options.editor.onDidChangeModelContent((event) =>
       this.onChange(event),
     );
+    this.onKeyDownHandle = options.editor.onKeyDown((event) => {
+      const shortcut = event.ctrlKey || event.metaKey;
+      if (!shortcut) {
+        return;
+      }
+
+      if (event.keyCode === MONACO_KEY_CODE_Z) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.shiftKey) {
+          this.redo();
+        } else {
+          this.undo();
+        }
+      } else if (event.keyCode === MONACO_KEY_CODE_Y) {
+        event.preventDefault();
+        event.stopPropagation();
+        this.redo();
+      }
+    });
 
     const cursorUpdate = debounce(() => this.sendCursorData(), 20);
     this.onCursorHandle = options.editor.onDidChangeCursorPosition((event) => {
@@ -104,6 +130,7 @@ export class SyncClient {
     window.clearInterval(this.tryConnectId);
     window.clearInterval(this.resetFailuresId);
     this.onSelectionHandle.dispose();
+    this.onKeyDownHandle.dispose();
     this.onCursorHandle.dispose();
     this.onChangeHandle.dispose();
     window.removeEventListener("beforeunload", this.beforeUnload);
@@ -272,6 +299,7 @@ export class SyncClient {
         operation = pair[1];
       }
     }
+    this.transformHistory(operation);
     this.applyOperation(operation);
   }
 
@@ -321,6 +349,13 @@ export class SyncClient {
   }
 
   private applyOperation(operation: OperationSeq): void {
+    this.applyOperationToModel(operation, true);
+  }
+
+  private applyOperationToModel(
+    operation: OperationSeq,
+    transformRemoteCursors: boolean,
+  ): void {
     if (isNoop(operation)) {
       return;
     }
@@ -331,9 +366,7 @@ export class SyncClient {
       if (component.type === "insert") {
         const position = unicodePosition(this.model, index);
         index += unicodeLength(component.text);
-        // Remote edits intentionally bypass Monaco's local undo stack. A future
-        // collaborative-aware undo should track local inverses and transform them
-        // through remote history instead.
+        // Monaco undo stays out of the sync path; undo/redo is tracked in OT space.
         this.model.applyEdits(
           [
             {
@@ -374,7 +407,9 @@ export class SyncClient {
 
     this.lastValue = this.model.getValue();
     this.ignoreChanges = false;
-    this.transformCursors(operation);
+    if (transformRemoteCursors) {
+      this.transformCursors(operation);
+    }
   }
 
   private transformCursors(operation: OperationSeq): void {
@@ -445,7 +480,12 @@ export class SyncClient {
       return;
     }
 
+    const before = this.lastValue;
     const operation = operationFromChangeEvent(this.lastValue, event);
+    if (!isNoop(operation)) {
+      this.undoStack.push(invertOperation(before, operation));
+      this.redoStack = [];
+    }
     this.applyClient(operation);
     this.lastValue = this.model.getValue();
   }
@@ -464,10 +504,91 @@ export class SyncClient {
       unicodeOffset(this.model, selection.getEndPosition()),
     ]);
   }
+
+  private undo(): void {
+    const operation = this.undoStack.pop();
+    if (operation) {
+      this.applyHistoryOperation(operation, "redo");
+    }
+  }
+
+  private redo(): void {
+    const operation = this.redoStack.pop();
+    if (operation) {
+      this.applyHistoryOperation(operation, "undo");
+    }
+  }
+
+  private applyHistoryOperation(
+    operation: OperationSeq,
+    inverseStack: "undo" | "redo",
+  ): void {
+    if (isNoop(operation)) {
+      return;
+    }
+
+    const before = this.model.getValue();
+    const inverse = invertOperation(before, operation);
+    this.applyOperationToModel(operation, false);
+    this.applyClient(operation);
+    if (inverseStack === "undo") {
+      this.undoStack.push(inverse);
+    } else {
+      this.redoStack.push(inverse);
+    }
+  }
+
+  private transformHistory(operation: OperationSeq): void {
+    this.undoStack = transformStack(this.undoStack, operation);
+    this.redoStack = transformStack(this.redoStack, operation);
+  }
+}
+
+function transformStack(stack: OperationSeq[], operation: OperationSeq): OperationSeq[] {
+  const transformed = [...stack];
+  let nextOperation = operation;
+
+  for (let index = transformed.length - 1; index >= 0; index -= 1) {
+    const [nextItem, operationAfterItem] = transform(
+      transformed[index],
+      nextOperation,
+    );
+    transformed[index] = nextItem;
+    nextOperation = operationAfterItem;
+  }
+
+  return transformed;
 }
 
 function unicodeLength(text: string): number {
   return Array.from(text).length;
+}
+
+function invertOperation(before: string, operation: OperationSeq): OperationSeq {
+  const chars = Array.from(before);
+  let index = 0;
+  const inverse: OperationSeq = [];
+
+  for (const component of operation) {
+    switch (component.type) {
+      case "retain":
+        inverse.push(component);
+        index += component.count;
+        break;
+      case "insert":
+        inverse.push({ type: "delete", count: unicodeLength(component.text) });
+        break;
+      case "delete":
+        inverse.push({
+          type: "insert",
+          text: chars.slice(index, index + component.count).join(""),
+        });
+        index += component.count;
+        break;
+    }
+  }
+
+  return normalize(inverse);
 }
 
 function operationFromChangeEvent(
