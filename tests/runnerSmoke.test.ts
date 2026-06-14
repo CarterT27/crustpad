@@ -1,6 +1,9 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import type { WorkerOutput } from "../src/runner/types";
 
+const cppToolchainAvailable = await canFetchCppToolchain();
+const cppSmokeTest = cppToolchainAvailable ? test : test.skip;
+
 type WorkerRunResult = {
   status: "completed" | "error";
   stdout: string;
@@ -47,7 +50,7 @@ describe("runner smoke tests", () => {
     expect(result.error).toBe("C runner reported a compile or runtime diagnostic.");
   });
 
-  test(
+  cppSmokeTest(
     "runs C++ and reports compiler diagnostics on stderr without ANSI escapes",
     async () => {
       const runner = createWorkerRunner("../src/runner/cpp.worker.ts");
@@ -76,6 +79,22 @@ describe("runner smoke tests", () => {
     120_000,
   );
 });
+
+async function canFetchCppToolchain(): Promise<boolean> {
+  try {
+    const response = await fetch(
+      "https://cdn.jsdelivr.net/npm/@chriskoch/cpp-wasm@1.0.2/memfs",
+      {
+        method: "HEAD",
+        signal: AbortSignal.timeout(5_000),
+      },
+    );
+
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
 
 type PendingRun = {
   reject: (error: Error) => void;
