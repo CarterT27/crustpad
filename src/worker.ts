@@ -1,11 +1,12 @@
 import { DurableObject } from "cloudflare:workers";
+import type { OperationSeq } from "./ot";
 import type {
   CursorData,
   PersistedDocument,
   UserInfo,
   UserOperation,
 } from "./protocol";
-import { Room, type RoomSocket } from "./room";
+import { Room, type RoomPersistenceState, type RoomSocket } from "./room";
 
 type Env = {
   ASSETS: Fetcher;
@@ -62,9 +63,9 @@ export class RoomObject extends DurableObject<Env> {
     this.ready = ctx.blockConcurrencyWhile(async () => {
       const persisted = await this.loadRoomState();
       this.room = new Room(this.ctx.id.name ?? this.ctx.id.toString(), persisted.document);
+      this.room.beforeHistoryBroadcast = (state) => this.persistRoom(state);
       if (persisted.operations) {
-        this.room.operations = persisted.operations;
-        this.room.revision = persisted.operations.length;
+        this.room.restoreOperations(persisted.operations);
       }
 
       const canRestoreSockets = persisted.operations !== undefined || !persisted.document;
@@ -107,22 +108,25 @@ export class RoomObject extends DurableObject<Env> {
     const wrapper = this.wrapSocket(ws);
 
     try {
-      this.getRoom().handle(wrapper, message);
+      const messageType = await this.getRoom().handle(wrapper, message);
+      this.saveAttachment(ws, wrapper);
+      if (messageType === "setLanguage") {
+        await this.persistRoom();
+      } else if (messageType && messageType !== "edit") {
+        await this.persistAccess();
+      }
     } catch (error) {
       const reason = error instanceof Error ? error.message : "invalid operation";
       ws.close(1003, reason.slice(0, 123));
       return;
     }
-
-    this.saveAttachment(ws, wrapper);
-    await this.persistRoom();
   }
 
   async webSocketClose(ws: WebSocket): Promise<void> {
     await this.ready;
     const wrapper = this.wrapSocket(ws);
     this.getRoom().disconnect(wrapper);
-    await this.persistRoom();
+    await this.persistAccess();
   }
 
   async webSocketError(ws: WebSocket): Promise<void> {
@@ -137,6 +141,12 @@ export class RoomObject extends DurableObject<Env> {
 
     if (room.connectionCount === 0 && room.lastAccessedAt < cutoff) {
       await this.ctx.storage.deleteAll();
+      return;
+    }
+
+    if (room.connectionCount > 0) {
+      room.lastAccessedAt = Date.now();
+      await this.persistAccess();
       return;
     }
 
@@ -156,7 +166,7 @@ export class RoomObject extends DurableObject<Env> {
     this.ctx.acceptWebSocket(server);
     this.getRoom().connect(wrapper);
     this.saveAttachment(server, wrapper);
-    this.ctx.waitUntil(this.persistRoom());
+    this.ctx.waitUntil(this.persistAccess());
 
     return new Response(null, {
       status: 101,
@@ -199,13 +209,23 @@ export class RoomObject extends DurableObject<Env> {
     ws.serializeAttachment(attachment);
   }
 
-  private async persistRoom(): Promise<void> {
+  private async persistRoom(state?: RoomPersistenceState): Promise<void> {
     const room = this.getRoom();
-    await this.ctx.storage.put({
+    const nextState = state ?? {
       document: room.snapshot(),
       operations: room.operations,
       lastAccessedAt: room.lastAccessedAt,
+    };
+    await this.ctx.storage.put({
+      document: nextState.document,
+      operations: nextState.operations,
+      lastAccessedAt: nextState.lastAccessedAt,
     });
+    await this.scheduleExpiry();
+  }
+
+  private async persistAccess(): Promise<void> {
+    await this.ctx.storage.put("lastAccessedAt", this.getRoom().lastAccessedAt);
     await this.scheduleExpiry();
   }
 
@@ -231,7 +251,8 @@ export class RoomObject extends DurableObject<Env> {
 
   private async scheduleExpiry(): Promise<void> {
     const expiryMs = this.expiryDays() * 24 * 60 * 60 * 1_000;
-    await this.ctx.storage.setAlarm(this.getRoom().lastAccessedAt + expiryMs);
+    const base = Math.max(this.getRoom().lastAccessedAt, Date.now());
+    await this.ctx.storage.setAlarm(base + expiryMs);
   }
 
   private expiryDays(): number {
@@ -265,5 +286,43 @@ function isPersistedDocument(value: unknown): value is PersistedDocument {
 }
 
 function isUserOperations(value: unknown): value is UserOperation[] {
-  return Array.isArray(value);
+  return Array.isArray(value) && value.every(isUserOperation);
+}
+
+function isUserOperation(value: unknown): value is UserOperation {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const operation = value as Partial<UserOperation>;
+  return (
+    Number.isSafeInteger(operation.id) &&
+    typeof operation.id === "number" &&
+    isOperationSeq(operation.operation)
+  );
+}
+
+function isOperationSeq(value: unknown): value is OperationSeq {
+  return Array.isArray(value) && value.every(isOperationComponent);
+}
+
+function isOperationComponent(value: unknown): value is OperationSeq[number] {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const component = value as Partial<OperationSeq[number]>;
+  switch (component.type) {
+    case "retain":
+    case "delete":
+      return (
+        Number.isSafeInteger(component.count) &&
+        typeof component.count === "number" &&
+        component.count >= 0
+      );
+    case "insert":
+      return typeof component.text === "string";
+    default:
+      return false;
+  }
 }

@@ -34,6 +34,55 @@ describe("DocumentStore", () => {
     expect(store.count()).toBe(1);
   });
 
+  test("round-trips room operation history", () => {
+    const path = tempDatabasePath();
+    const store = new DocumentStore(path);
+    const operations = [
+      { id: 1, operation: [{ type: "insert" as const, text: "hello" }] },
+    ];
+
+    store.storeRoomState(
+      "room",
+      { text: "hello", language: "javascript" },
+      operations,
+    );
+
+    expect(store.loadRoomState("room")).toEqual({
+      document: {
+        text: "hello",
+        language: "javascript",
+      },
+      operations,
+    });
+  });
+
+  test("migrates existing documents without operation history", () => {
+    const path = tempDatabasePath();
+    const db = new SQLite(path, { create: true });
+    db.exec(`
+      CREATE TABLE document (
+        id TEXT PRIMARY KEY,
+        text TEXT NOT NULL,
+        language TEXT,
+        last_accessed_at INTEGER NOT NULL DEFAULT 0
+      )
+    `);
+    db.query(
+      "INSERT INTO document (id, text, language, last_accessed_at) VALUES (?, ?, ?, ?)",
+    ).run("legacy", "saved", "plaintext", 100);
+    db.close();
+
+    const store = new DocumentStore(path);
+
+    expect(store.loadRoomState("legacy")).toEqual({
+      document: {
+        text: "saved",
+        language: "plaintext",
+      },
+      operations: undefined,
+    });
+  });
+
   test("deletes expired documents while keeping active rooms", () => {
     const path = tempDatabasePath();
     const store = new DocumentStore(path);

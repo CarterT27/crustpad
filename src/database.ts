@@ -1,6 +1,11 @@
 import { Database as SQLite } from "bun:sqlite";
-import type { LanguageId, PersistedDocument } from "./protocol";
+import type { LanguageId, PersistedDocument, UserOperation } from "./protocol";
 import { isLanguageId } from "./protocol";
+
+export type StoredRoomState = {
+  document: PersistedDocument;
+  operations?: UserOperation[];
+};
 
 export class DocumentStore {
   private readonly db: SQLite;
@@ -12,6 +17,7 @@ export class DocumentStore {
         id TEXT PRIMARY KEY,
         text TEXT NOT NULL,
         language TEXT,
+        operations TEXT,
         last_accessed_at INTEGER NOT NULL DEFAULT 0
       )
     `);
@@ -35,6 +41,27 @@ export class DocumentStore {
     };
   }
 
+  loadRoomState(documentId: string): StoredRoomState | undefined {
+    const row = this.db
+      .query<
+        { text: string; language: string | null; operations: string | null },
+        [string]
+      >("SELECT text, language, operations FROM document WHERE id = ?")
+      .get(documentId);
+
+    if (!row) {
+      return undefined;
+    }
+
+    return {
+      document: {
+        text: row.text,
+        language: parseLanguage(row.language),
+      },
+      operations: parseOperations(row.operations),
+    };
+  }
+
   store(
     documentId: string,
     document: PersistedDocument,
@@ -50,6 +77,31 @@ export class DocumentStore {
            last_accessed_at = excluded.last_accessed_at`,
       )
       .run(documentId, document.text, document.language, lastAccessedAt);
+  }
+
+  storeRoomState(
+    documentId: string,
+    document: PersistedDocument,
+    operations: UserOperation[],
+    lastAccessedAt = Date.now(),
+  ): void {
+    this.db
+      .query(
+        `INSERT INTO document (id, text, language, operations, last_accessed_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           text = excluded.text,
+           language = excluded.language,
+           operations = excluded.operations,
+           last_accessed_at = excluded.last_accessed_at`,
+      )
+      .run(
+        documentId,
+        document.text,
+        document.language,
+        JSON.stringify(operations),
+        lastAccessedAt,
+      );
   }
 
   touch(documentId: string, lastAccessedAt = Date.now()): void {
@@ -82,17 +134,71 @@ export class DocumentStore {
       .all()
       .map((column) => column.name);
 
-    if (columns.includes("last_accessed_at")) {
-      return;
+    if (!columns.includes("operations")) {
+      this.db.exec("ALTER TABLE document ADD COLUMN operations TEXT");
     }
 
-    this.db.exec("ALTER TABLE document ADD COLUMN last_accessed_at INTEGER NOT NULL DEFAULT 0");
-    this.db
-      .query("UPDATE document SET last_accessed_at = ? WHERE last_accessed_at = 0")
-      .run(Date.now());
+    if (!columns.includes("last_accessed_at")) {
+      this.db.exec("ALTER TABLE document ADD COLUMN last_accessed_at INTEGER NOT NULL DEFAULT 0");
+      this.db
+        .query("UPDATE document SET last_accessed_at = ? WHERE last_accessed_at = 0")
+        .run(Date.now());
+    }
   }
 }
 
 function parseLanguage(language: string | null): LanguageId {
   return isLanguageId(language) ? language : "plaintext";
+}
+
+function parseOperations(value: string | null): UserOperation[] | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  try {
+    const operations: unknown = JSON.parse(value);
+    return isUserOperations(operations) ? operations : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isUserOperations(value: unknown): value is UserOperation[] {
+  return Array.isArray(value) && value.every(isUserOperation);
+}
+
+function isUserOperation(value: unknown): value is UserOperation {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const operation = value as Partial<UserOperation>;
+  return (
+    Number.isSafeInteger(operation.id) &&
+    typeof operation.id === "number" &&
+    Array.isArray(operation.operation) &&
+    operation.operation.every(isOperationComponent)
+  );
+}
+
+function isOperationComponent(value: unknown): boolean {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const component = value as Partial<UserOperation["operation"][number]>;
+  switch (component.type) {
+    case "retain":
+    case "delete":
+      return (
+        Number.isSafeInteger(component.count) &&
+        typeof component.count === "number" &&
+        component.count >= 0
+      );
+    case "insert":
+      return typeof component.text === "string";
+    default:
+      return false;
+  }
 }

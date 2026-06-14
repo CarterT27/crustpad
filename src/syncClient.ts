@@ -19,6 +19,7 @@ import type {
 
 const MONACO_KEY_CODE_Y = 55;
 const MONACO_KEY_CODE_Z = 56;
+const MAX_RECONNECT_DELAY = 30_000;
 
 export type SyncClientOptions = {
   uri: string;
@@ -34,8 +35,11 @@ export type SyncClientOptions = {
 export class SyncClient {
   private ws?: WebSocket;
   private connecting = false;
+  private connected = false;
   private disposed = false;
+  private nextConnectAt = 0;
   private recentFailures = 0;
+  private readonly reconnectInterval: number;
   private readonly model: editor.ITextModel;
   private readonly onChangeHandle: IDisposable;
   private readonly onCursorHandle: IDisposable;
@@ -113,6 +117,7 @@ export class SyncClient {
     window.addEventListener("beforeunload", this.beforeUnload);
 
     const interval = options.reconnectInterval ?? 1000;
+    this.reconnectInterval = interval;
     this.tryConnect();
     this.tryConnectId = window.setInterval(() => this.tryConnect(), interval);
     this.resetFailuresId = window.setInterval(
@@ -138,6 +143,7 @@ export class SyncClient {
     const ws = this.ws;
     this.ws = undefined;
     this.connecting = false;
+    this.connected = false;
     if (ws) {
       ws.onopen = null;
       ws.onclose = null;
@@ -147,8 +153,7 @@ export class SyncClient {
   }
 
   setLanguage(language: LanguageId): boolean {
-    this.send({ type: "setLanguage", language });
-    return this.ws !== undefined;
+    return this.send({ type: "setLanguage", language });
   }
 
   setInfo(info: UserInfo): void {
@@ -157,12 +162,24 @@ export class SyncClient {
   }
 
   private tryConnect(): void {
-    if (this.disposed || this.connecting || this.ws) {
+    if (
+      this.disposed ||
+      this.connecting ||
+      this.ws ||
+      Date.now() < this.nextConnectAt
+    ) {
       return;
     }
 
     this.connecting = true;
-    const ws = new WebSocket(this.options.uri);
+    let ws: WebSocket;
+    try {
+      ws = new WebSocket(this.options.uri);
+    } catch {
+      this.connecting = false;
+      this.noteConnectionFailure();
+      return;
+    }
     ws.onopen = () => {
       if (this.disposed) {
         ws.close();
@@ -171,39 +188,59 @@ export class SyncClient {
 
       this.connecting = false;
       this.ws = ws;
-      this.options.onConnected?.();
+      this.connected = false;
       this.users = {};
-      this.options.onChangeUsers?.(this.users);
-      this.sendInfo();
-      this.sendCursorData();
+      this.userCursors = {};
     };
     ws.onclose = () => {
       if (this.disposed) {
         return;
       }
 
-      if (this.ws !== ws) {
-        this.connecting = false;
+      const wasCurrent = this.ws === ws;
+      const wasConnected = wasCurrent && this.connected;
+      if (!wasCurrent && !this.connecting) {
         return;
       }
+      if (wasCurrent) {
+        this.ws = undefined;
+        this.connected = false;
+      }
 
-      this.ws = undefined;
+      if (!wasCurrent) {
+        this.connecting = false;
+      }
+
       this.connecting = false;
       if (this.outstanding) {
         this.desynchronize();
         return;
       }
 
-      this.options.onDisconnected?.();
-      if (++this.recentFailures >= 5) {
-        this.desynchronize();
+      if (wasConnected) {
+        this.options.onDisconnected?.();
       }
+      this.noteConnectionFailure();
     };
     ws.onmessage = ({ data }) => {
       if (!this.disposed && this.ws === ws && typeof data === "string") {
-        this.handleMessage(JSON.parse(data) as ServerMsg);
+        try {
+          this.handleMessage(JSON.parse(data) as ServerMsg);
+        } catch {
+          this.desynchronize();
+        }
       }
     };
+  }
+
+  private noteConnectionFailure(): void {
+    this.recentFailures += 1;
+    const backoff = Math.min(
+      this.reconnectInterval * 2 ** Math.max(0, this.recentFailures - 1),
+      MAX_RECONNECT_DELAY,
+    );
+    this.nextConnectAt =
+      Date.now() + backoff + Math.floor(Math.random() * this.reconnectInterval);
   }
 
   private desynchronize(): void {
@@ -248,6 +285,21 @@ export class SyncClient {
         this.applyServer(operation);
       }
     }
+    this.acceptInitialSync();
+  }
+
+  private acceptInitialSync(): void {
+    if (this.connected) {
+      return;
+    }
+
+    this.connected = true;
+    this.recentFailures = 0;
+    this.nextConnectAt = 0;
+    this.options.onConnected?.();
+    this.options.onChangeUsers?.(this.users);
+    this.sendInfo();
+    this.sendCursorData();
   }
 
   private handleUserInfo(id: number, info: UserInfo | null): void {
@@ -314,8 +366,9 @@ export class SyncClient {
     }
 
     if (!this.outstanding) {
-      this.sendOperation(operation);
-      this.outstanding = operation;
+      if (this.sendOperation(operation)) {
+        this.outstanding = operation;
+      }
     } else if (!this.buffer) {
       this.buffer = operation;
     } else {
@@ -324,12 +377,16 @@ export class SyncClient {
     this.transformCursors(operation);
   }
 
-  private sendOperation(operation: OperationSeq): void {
-    this.send({
+  private sendOperation(operation: OperationSeq): boolean {
+    const sent = this.send({
       type: "edit",
       revision: this.revision,
       operation,
     });
+    if (!sent) {
+      this.desynchronize();
+    }
+    return sent;
   }
 
   private sendInfo(): void {
@@ -344,8 +401,17 @@ export class SyncClient {
     }
   }
 
-  private send(message: ClientMsg): void {
-    this.ws?.send(JSON.stringify(message));
+  private send(message: ClientMsg): boolean {
+    if (!this.ws) {
+      return false;
+    }
+
+    try {
+      this.ws.send(JSON.stringify(message));
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private applyOperation(operation: OperationSeq): void {

@@ -1,5 +1,5 @@
 import { DocumentStore } from "./database";
-import { Room, type SocketData } from "./room";
+import { Room, type RoomPersistenceState, type SocketData } from "./room";
 
 const port = Number.parseInt(process.env.PORT ?? "3030", 10);
 const expiryDays = parseExpiryDays(process.env.EXPIRY_DAYS);
@@ -21,13 +21,16 @@ function getRoom(id: string): Room {
     return existing;
   }
 
-  const persisted = store.load(id);
+  const persisted = store.loadRoomState(id);
   if (persisted) {
     store.touch(id, now);
     persistedAccesses.set(id, now);
   }
 
-  const room = new Room(id, persisted);
+  const room = new Room(id, persisted?.document);
+  if (persisted?.operations) {
+    room.restoreOperations(persisted.operations);
+  }
   rooms.set(id, room);
   startPersister(id, room);
   return room;
@@ -45,13 +48,20 @@ function touchPersistedAccess(id: string, lastAccessedAt: number): void {
 
 function startPersister(id: string, room: Room): void {
   let lastRevision = room.revision;
+  room.beforeHistoryBroadcast = async (state) => {
+    storeRoomState(id, state);
+    lastRevision = state.operations.length;
+  };
   const timer = setInterval(() => {
     if (room.revision <= lastRevision) {
       return;
     }
 
-    store.store(id, room.snapshot(), room.lastAccessedAt);
-    persistedAccesses.set(id, room.lastAccessedAt);
+    storeRoomState(id, {
+      document: room.snapshot(),
+      operations: room.operations,
+      lastAccessedAt: room.lastAccessedAt,
+    });
     lastRevision = room.revision;
   }, 3_000);
   timer.unref();
@@ -59,7 +69,11 @@ function startPersister(id: string, room: Room): void {
 }
 
 function removeRoom(id: string, room: Room): void {
-  store.store(id, room.snapshot(), room.lastAccessedAt);
+  storeRoomState(id, {
+    document: room.snapshot(),
+    operations: room.operations,
+    lastAccessedAt: room.lastAccessedAt,
+  });
   persistedAccesses.delete(id);
   rooms.delete(id);
   const timer = persisters.get(id);
@@ -67,6 +81,16 @@ function removeRoom(id: string, room: Room): void {
     clearInterval(timer);
     persisters.delete(id);
   }
+}
+
+function storeRoomState(id: string, state: RoomPersistenceState): void {
+  store.storeRoomState(
+    id,
+    state.document,
+    state.operations,
+    state.lastAccessedAt,
+  );
+  persistedAccesses.set(id, state.lastAccessedAt);
 }
 
 function expireRoomsAndDocuments(): void {
@@ -143,9 +167,9 @@ const server = Bun.serve<SocketData>({
     open(ws) {
       getRoom(ws.data.roomId).connect(ws);
     },
-    message(ws, message) {
+    async message(ws, message) {
       try {
-        getRoom(ws.data.roomId).handle(ws, message);
+        await getRoom(ws.data.roomId).handle(ws, message);
       } catch (error) {
         const reason = error instanceof Error ? error.message : "invalid operation";
         ws.close(1003, reason.slice(0, 123));

@@ -18,11 +18,11 @@ function socket(userId = 1) {
 }
 
 describe("Room", () => {
-  test("transforms edits sent from stale revisions", () => {
+  test("transforms edits sent from stale revisions", async () => {
     const room = new Room("test");
 
-    room["applyEdit"](1, 0, [{ type: "insert", text: "abc" }]);
-    room["applyEdit"](2, 0, [{ type: "insert", text: "xyz" }]);
+    await room["applyEdit"](1, 0, [{ type: "insert", text: "abc" }]);
+    await room["applyEdit"](2, 0, [{ type: "insert", text: "xyz" }]);
 
     expect(room.text).toBe("xyzabc");
     expect(room.revision).toBe(2);
@@ -46,11 +46,43 @@ describe("Room", () => {
     });
   });
 
-  test("rejects edits from future revisions without changing state", () => {
+  test("reserves restored author ids without reserving the snapshot sentinel", () => {
+    const restored = new Room("restored");
+    restored.restoreOperations([
+      { id: 0, operation: [{ type: "insert", text: "a" }] },
+      { id: 2, operation: [{ type: "insert", text: "b" }] },
+      { id: Number.MAX_SAFE_INTEGER, operation: [] },
+    ]);
+    const fresh = socket();
+    restored.connect(fresh as never);
+    expect(JSON.parse(fresh.sent[0] ?? "")).toEqual({ type: "identity", id: 3 });
+
+    const withSocket = new Room("attached");
+    withSocket.restoreOperations([
+      { id: 2, operation: [{ type: "insert", text: "a" }] },
+    ]);
+    withSocket.restoreSocket(socket(5) as never);
+    const afterSocket = socket();
+    withSocket.connect(afterSocket as never);
+    expect(JSON.parse(afterSocket.sent[0] ?? "")).toEqual({
+      type: "identity",
+      id: 6,
+    });
+
+    const snapshotOnly = new Room("snapshot", {
+      text: "hello",
+      language: "plaintext",
+    });
+    const first = socket();
+    snapshotOnly.connect(first as never);
+    expect(JSON.parse(first.sent[0] ?? "")).toEqual({ type: "identity", id: 0 });
+  });
+
+  test("rejects edits from future revisions without changing state", async () => {
     const room = new Room("test");
     const ws = socket();
 
-    expect(() =>
+    await expect(
       room.handle(
         ws as never,
         JSON.stringify({
@@ -59,13 +91,13 @@ describe("Room", () => {
           operation: [{ type: "insert", text: "stale" }],
         }),
       ),
-    ).toThrow("invalid revision 1");
+    ).rejects.toThrow("invalid revision 1");
     expect(room.text).toBe("");
     expect(room.revision).toBe(0);
     expect(room.operations).toEqual([]);
   });
 
-  test("rejects malformed edit operations before applying OT", () => {
+  test("rejects malformed edit operations before applying OT", async () => {
     const invalidOperations = [
       [{ type: "retain", count: -1 }],
       [{ type: "delete", count: 1.5 }],
@@ -78,7 +110,7 @@ describe("Room", () => {
       const room = new Room("test");
       const ws = socket();
 
-      room.handle(
+      await room.handle(
         ws as never,
         JSON.stringify({
           type: "edit",
@@ -95,7 +127,7 @@ describe("Room", () => {
     }
   });
 
-  test("clears presence and cursor state when a collaborator disconnects", () => {
+  test("clears presence and cursor state when a collaborator disconnects", async () => {
     const room = new Room("test");
     const first = socket();
     const second = socket();
@@ -105,14 +137,14 @@ describe("Room", () => {
     first.sent = [];
     second.sent = [];
 
-    room.handle(
+    await room.handle(
       first as never,
       JSON.stringify({
         type: "clientInfo",
         info: { name: "Ada", hue: 120 },
       }),
     );
-    room.handle(
+    await room.handle(
       first as never,
       JSON.stringify({
         type: "cursorData",
@@ -135,11 +167,111 @@ describe("Room", () => {
     });
   });
 
-  test("rejects user info outside protocol bounds", () => {
+  test("prunes sockets that throw during broadcast", async () => {
+    const room = new Room("test");
+    const stale = socket();
+    const live = socket();
+    room.connect(stale as never);
+    room.connect(live as never);
+
+    await room.handle(
+      stale as never,
+      JSON.stringify({
+        type: "clientInfo",
+        info: { name: "Ada", hue: 120 },
+      }),
+    );
+    await room.handle(
+      stale as never,
+      JSON.stringify({
+        type: "cursorData",
+        data: { cursors: [0], selections: [] },
+      }),
+    );
+    stale.send = () => {
+      throw new Error("closed");
+    };
+    live.sent = [];
+
+    await room.handle(
+      live as never,
+      JSON.stringify({
+        type: "clientInfo",
+        info: { name: "Grace", hue: 180 },
+      }),
+    );
+
+    expect(room.connectionCount).toBe(1);
+    expect(room.users.has(0)).toBe(false);
+    expect(room.cursors.has(0)).toBe(false);
+    expect(live.sent.map((message) => JSON.parse(message))).toContainEqual({
+      type: "userInfo",
+      id: 0,
+      info: null,
+    });
+  });
+
+  test("runs the history persistence hook before broadcasting edits", async () => {
+    const room = new Room("test");
+    const ws = socket();
+    const events: string[] = [];
+    ws.send = (message: string) => {
+      events.push("send");
+      ws.sent.push(message);
+    };
+    room.connect(ws as never);
+    events.length = 0;
+    room.beforeHistoryBroadcast = async () => {
+      events.push("persist");
+    };
+
+    await room.handle(
+      ws as never,
+      JSON.stringify({
+        type: "edit",
+        revision: 0,
+        operation: [{ type: "insert", text: "a" }],
+      }),
+    );
+
+    expect(events).toEqual(["persist", "send"]);
+  });
+
+  test("does not commit or broadcast edits when persistence fails", async () => {
+    const room = new Room("test");
+    const ws = socket();
+    room.connect(ws as never);
+    ws.sent = [];
+    room.beforeHistoryBroadcast = async (state) => {
+      expect(state.document.text).toBe("a");
+      expect(state.operations).toEqual([
+        { id: 0, operation: [{ type: "insert", text: "a" }] },
+      ]);
+      throw new Error("write failed");
+    };
+
+    await expect(
+      room.handle(
+        ws as never,
+        JSON.stringify({
+          type: "edit",
+          revision: 0,
+          operation: [{ type: "insert", text: "a" }],
+        }),
+      ),
+    ).rejects.toThrow("write failed");
+
+    expect(room.text).toBe("");
+    expect(room.revision).toBe(0);
+    expect(room.operations).toEqual([]);
+    expect(ws.sent).toEqual([]);
+  });
+
+  test("rejects user info outside protocol bounds", async () => {
     const room = new Room("test");
     const ws = socket();
 
-    room.handle(
+    await room.handle(
       ws as never,
       JSON.stringify({
         type: "clientInfo",
@@ -150,7 +282,7 @@ describe("Room", () => {
     expect(room.users.size).toBe(0);
 
     const second = socket();
-    room.handle(
+    await room.handle(
       second as never,
       JSON.stringify({
         type: "clientInfo",
@@ -161,12 +293,12 @@ describe("Room", () => {
     expect(room.users.size).toBe(0);
   });
 
-  test("rejects oversized or out-of-range cursor data", () => {
+  test("rejects oversized or out-of-range cursor data", async () => {
     const room = new Room("test");
-    room["applyEdit"](1, 0, [{ type: "insert", text: "abc" }]);
+    await room["applyEdit"](1, 0, [{ type: "insert", text: "abc" }]);
 
     const tooManyCursors = socket();
-    room.handle(
+    await room.handle(
       tooManyCursors as never,
       JSON.stringify({
         type: "cursorData",
@@ -180,7 +312,7 @@ describe("Room", () => {
     expect(room.cursors.size).toBe(0);
 
     const outOfRangeSelection = socket();
-    room.handle(
+    await room.handle(
       outOfRangeSelection as never,
       JSON.stringify({
         type: "cursorData",

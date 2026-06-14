@@ -23,6 +23,12 @@ export type RoomSocket = {
   close(code: number, reason: string): void;
 };
 
+export type RoomPersistenceState = {
+  document: PersistedDocument;
+  operations: UserOperation[];
+  lastAccessedAt: number;
+};
+
 const MAX_TARGET_LENGTH = 256 * 1024;
 const MAX_USER_NAME_LENGTH = 25;
 const MIN_USER_HUE = 0;
@@ -39,6 +45,7 @@ export class Room {
   users = new Map<UserId, UserInfo>();
   cursors = new Map<UserId, CursorData>();
   lastAccessedAt = Date.now();
+  beforeHistoryBroadcast?: (state: RoomPersistenceState) => Promise<void>;
 
   private nextUserId = 0;
   private readonly sockets = new Set<RoomSocket>();
@@ -110,22 +117,22 @@ export class Room {
     this.touch();
   }
 
-  handle(ws: RoomSocket, raw: unknown): void {
+  async handle(ws: RoomSocket, raw: unknown): Promise<ClientMsg["type"] | undefined> {
     const userId = ws.data.userId;
     if (userId === undefined || typeof raw !== "string") {
-      return;
+      return undefined;
     }
 
     const message = parseClientMsg(raw, Array.from(this.text).length);
     if (!message) {
       ws.close(1003, "invalid message");
-      return;
+      return undefined;
     }
 
     this.touch();
     switch (message.type) {
       case "edit":
-        this.applyEdit(userId, message.revision, message.operation);
+        await this.applyEdit(userId, message.revision, message.operation);
         break;
       case "setLanguage":
         this.language = message.language;
@@ -140,6 +147,7 @@ export class Room {
         this.broadcast({ type: "userCursor", id: userId, data: message.data });
         break;
     }
+    return message.type;
   }
 
   snapshot(): PersistedDocument {
@@ -149,11 +157,19 @@ export class Room {
     };
   }
 
-  private applyEdit(
+  restoreOperations(operations: UserOperation[]): void {
+    this.operations = operations;
+    this.revision = operations.length;
+    for (const { id } of operations) {
+      this.restoreUserId(id);
+    }
+  }
+
+  private async applyEdit(
     userId: UserId,
     revision: number,
     incoming: UserOperation["operation"],
-  ): void {
+  ): Promise<void> {
     if (!Number.isSafeInteger(revision) || revision < 0 || revision > this.revision) {
       throw new Error(`invalid revision ${revision}`);
     }
@@ -168,21 +184,27 @@ export class Room {
     }
 
     const nextText = apply(this.text, operation);
-    for (const data of this.cursors.values()) {
-      data.cursors = data.cursors.map((cursor) => transformIndex(operation, cursor));
-      data.selections = data.selections.map(([start, end]) => [
-        transformIndex(operation, start),
-        transformIndex(operation, end),
-      ]);
+    const nextCursors = new Map<UserId, CursorData>();
+    for (const [id, data] of this.cursors) {
+      nextCursors.set(id, transformCursorData(data, operation));
     }
 
     const userOperation = { id: userId, operation };
-    this.operations.push(userOperation);
-    this.revision = this.operations.length;
+    const nextOperations = [...this.operations, userOperation];
+    const nextRevision = nextOperations.length;
+    await this.beforeHistoryBroadcast?.({
+      document: { text: nextText, language: this.language },
+      operations: nextOperations,
+      lastAccessedAt: this.lastAccessedAt,
+    });
+
+    this.operations = nextOperations;
+    this.revision = nextRevision;
     this.text = nextText;
+    this.cursors = nextCursors;
     this.broadcast({
       type: "history",
-      start: this.revision - 1,
+      start: nextRevision - 1,
       operations: [userOperation],
     });
   }
@@ -194,16 +216,56 @@ export class Room {
   }
 
   private send(ws: RoomSocket, message: ServerMsg): void {
-    ws.send(JSON.stringify(message));
+    try {
+      ws.send(JSON.stringify(message));
+    } catch {
+      this.dropSocket(ws);
+    }
+  }
+
+  private dropSocket(ws: RoomSocket): void {
+    const hadSocket = this.sockets.delete(ws);
+    const userId = ws.data.userId;
+    if (userId === undefined) {
+      return;
+    }
+
+    const hadUser = this.users.delete(userId);
+    const hadCursor = this.cursors.delete(userId);
+    const hadPresence = hadUser || hadCursor;
+    if (hadSocket || hadPresence) {
+      this.broadcast({ type: "userInfo", id: userId, info: null });
+    }
   }
 
   private restoreUserId(userId: UserId): void {
+    if (
+      !Number.isSafeInteger(userId) ||
+      userId < 0 ||
+      userId >= Number.MAX_SAFE_INTEGER
+    ) {
+      return;
+    }
+
     this.nextUserId = Math.max(this.nextUserId, userId + 1);
   }
 
   private touch(): void {
     this.lastAccessedAt = Date.now();
   }
+}
+
+function transformCursorData(
+  data: CursorData,
+  operation: OperationSeq,
+): CursorData {
+  return {
+    cursors: data.cursors.map((cursor) => transformIndex(operation, cursor)),
+    selections: data.selections.map(([start, end]) => [
+      transformIndex(operation, start),
+      transformIndex(operation, end),
+    ]),
+  };
 }
 
 function parseClientMsg(raw: string, documentLength: number): ClientMsg | undefined {
