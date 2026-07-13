@@ -56,6 +56,24 @@ describe("DocumentStore", () => {
     });
   });
 
+  test("ignores malformed persisted operation history", () => {
+    const path = tempDatabasePath();
+    const store = new DocumentStore(path);
+    store.storeRoomState(
+      "room",
+      { text: "hello", language: "javascript" },
+      [{ id: 1, operation: [{ type: "insert", text: "hello" }] }],
+    );
+    const db = new SQLite(path);
+    db.query("UPDATE document SET operations = ? WHERE id = ?").run(
+      JSON.stringify([{ id: 1, operation: [{ type: "delete", count: -1 }] }]),
+      "room",
+    );
+    db.close();
+
+    expect(store.loadRoomState("room")?.operations).toBeUndefined();
+  });
+
   test("migrates existing documents without operation history", () => {
     const path = tempDatabasePath();
     const db = new SQLite(path, { create: true });

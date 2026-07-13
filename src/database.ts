@@ -1,6 +1,6 @@
 import { Database as SQLite } from "bun:sqlite";
 import type { LanguageId, PersistedDocument, UserOperation } from "./protocol";
-import { isLanguageId } from "./protocol";
+import { isLanguageId, isUserOperations } from "./protocol";
 
 export type StoredRoomState = {
   document: PersistedDocument;
@@ -161,44 +161,5 @@ function parseOperations(value: string | null): UserOperation[] | undefined {
     return isUserOperations(operations) ? operations : undefined;
   } catch {
     return undefined;
-  }
-}
-
-function isUserOperations(value: unknown): value is UserOperation[] {
-  return Array.isArray(value) && value.every(isUserOperation);
-}
-
-function isUserOperation(value: unknown): value is UserOperation {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  const operation = value as Partial<UserOperation>;
-  return (
-    Number.isSafeInteger(operation.id) &&
-    typeof operation.id === "number" &&
-    Array.isArray(operation.operation) &&
-    operation.operation.every(isOperationComponent)
-  );
-}
-
-function isOperationComponent(value: unknown): boolean {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  const component = value as Partial<UserOperation["operation"][number]>;
-  switch (component.type) {
-    case "retain":
-    case "delete":
-      return (
-        Number.isSafeInteger(component.count) &&
-        typeof component.count === "number" &&
-        component.count >= 0
-      );
-    case "insert":
-      return typeof component.text === "string";
-    default:
-      return false;
   }
 }

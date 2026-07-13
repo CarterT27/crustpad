@@ -10,7 +10,13 @@ import type {
   UserInfo,
   UserOperation,
 } from "./protocol";
-import { isLanguageId } from "./protocol";
+import {
+  isLanguageId,
+  isOperationSeq,
+  isUserInfo,
+  MAX_CLIENT_MESSAGE_LENGTH,
+  MAX_DOCUMENT_LENGTH,
+} from "./protocol";
 
 export type SocketData = {
   roomId: string;
@@ -29,12 +35,9 @@ export type RoomPersistenceState = {
   lastAccessedAt: number;
 };
 
-const MAX_TARGET_LENGTH = 256 * 1024;
-const MAX_USER_NAME_LENGTH = 25;
-const MIN_USER_HUE = 0;
-const MAX_USER_HUE = 359;
 const MAX_CURSORS = 16;
 const MAX_SELECTIONS = 16;
+const textEncoder = new TextEncoder();
 
 export class Room {
   readonly id: string;
@@ -45,7 +48,7 @@ export class Room {
   users = new Map<UserId, UserInfo>();
   cursors = new Map<UserId, CursorData>();
   lastAccessedAt = Date.now();
-  beforeHistoryBroadcast?: (state: RoomPersistenceState) => Promise<void>;
+  beforeStateBroadcast?: (state: RoomPersistenceState) => Promise<void>;
 
   private nextUserId = 0;
   private readonly sockets = new Set<RoomSocket>();
@@ -119,7 +122,17 @@ export class Room {
 
   async handle(ws: RoomSocket, raw: unknown): Promise<ClientMsg["type"] | undefined> {
     const userId = ws.data.userId;
-    if (userId === undefined || typeof raw !== "string") {
+    if (userId === undefined) {
+      return undefined;
+    }
+
+    if (typeof raw !== "string") {
+      ws.close(1003, "invalid message");
+      return undefined;
+    }
+
+    if (textEncoder.encode(raw).byteLength > MAX_CLIENT_MESSAGE_LENGTH) {
+      ws.close(1009, "message too large");
       return undefined;
     }
 
@@ -135,6 +148,14 @@ export class Room {
         await this.applyEdit(userId, message.revision, message.operation);
         break;
       case "setLanguage":
+        if (message.language === this.language) {
+          break;
+        }
+        await this.beforeStateBroadcast?.({
+          document: { text: this.text, language: message.language },
+          operations: this.operations,
+          lastAccessedAt: this.lastAccessedAt,
+        });
         this.language = message.language;
         this.broadcast({ type: "language", language: message.language });
         break;
@@ -165,6 +186,16 @@ export class Room {
     }
   }
 
+  compactHistory(): boolean {
+    if (this.connectionCount > 0 || this.operations.length <= 1) {
+      return false;
+    }
+
+    this.operations = [snapshotOperation(this.text)];
+    this.revision = 1;
+    return true;
+  }
+
   private async applyEdit(
     userId: UserId,
     revision: number,
@@ -179,7 +210,7 @@ export class Room {
       operation = transform(operation, historyOp.operation)[0];
     }
 
-    if (targetLength(operation) > MAX_TARGET_LENGTH) {
+    if (targetLength(operation) > MAX_DOCUMENT_LENGTH) {
       throw new Error("document exceeds maximum length");
     }
 
@@ -192,7 +223,7 @@ export class Room {
     const userOperation = { id: userId, operation };
     const nextOperations = [...this.operations, userOperation];
     const nextRevision = nextOperations.length;
-    await this.beforeHistoryBroadcast?.({
+    await this.beforeStateBroadcast?.({
       document: { text: nextText, language: this.language },
       operations: nextOperations,
       lastAccessedAt: this.lastAccessedAt,
@@ -269,7 +300,12 @@ function transformCursorData(
 }
 
 function parseClientMsg(raw: string, documentLength: number): ClientMsg | undefined {
-  const value: unknown = JSON.parse(raw);
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
   if (!value || typeof value !== "object" || !("type" in value)) {
     return undefined;
   }
@@ -295,54 +331,6 @@ function parseClientMsg(raw: string, documentLength: number): ClientMsg | undefi
   }
 }
 
-function isOperationSeq(value: unknown): value is OperationSeq {
-  return Array.isArray(value) && value.every(isOperationComponent);
-}
-
-function isOperationComponent(value: unknown): value is OperationSeq[number] {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  const component = value as Partial<OperationSeq[number]>;
-  switch (component.type) {
-    case "retain":
-    case "delete":
-      return (
-        Number.isSafeInteger(component.count) &&
-        typeof component.count === "number" &&
-        component.count >= 0
-      );
-    case "insert":
-      return typeof component.text === "string";
-    default:
-      return false;
-  }
-}
-
-function isUserInfo(value: unknown): value is UserInfo {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  const { name, hue } = value as Partial<UserInfo>;
-  return (
-    typeof name === "string" &&
-    name.length > 0 &&
-    name.length <= MAX_USER_NAME_LENGTH &&
-    isUserHue(hue)
-  );
-}
-
-function isUserHue(value: unknown): value is number {
-  return (
-    Number.isSafeInteger(value) &&
-    typeof value === "number" &&
-    value >= MIN_USER_HUE &&
-    value <= MAX_USER_HUE
-  );
-}
-
 function isDocumentOffset(value: unknown, documentLength: number): value is number {
   return (
     Number.isSafeInteger(value) &&
@@ -350,6 +338,13 @@ function isDocumentOffset(value: unknown, documentLength: number): value is numb
     value >= 0 &&
     value <= documentLength
   );
+}
+
+function snapshotOperation(text: string): UserOperation {
+  return {
+    id: Number.MAX_SAFE_INTEGER,
+    operation: normalize([{ type: "insert", text }]),
+  };
 }
 
 function isCursorData(value: unknown, documentLength: number): value is CursorData {

@@ -1,4 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import {
+  MAX_CLIENT_MESSAGE_LENGTH,
+  MAX_OPERATION_COMPONENTS,
+} from "../src/protocol";
 import { Room } from "../src/room";
 
 function socket(userId = 1) {
@@ -127,6 +131,20 @@ describe("Room", () => {
     }
   });
 
+  test("rejects malformed JSON and binary messages", async () => {
+    const room = new Room("test");
+    const malformed = socket();
+    const binary = socket();
+
+    await room.handle(malformed as never, "{");
+    await room.handle(binary as never, new ArrayBuffer(1));
+
+    expect(malformed.closeCode).toBe(1003);
+    expect(malformed.closeReason).toBe("invalid message");
+    expect(binary.closeCode).toBe(1003);
+    expect(binary.closeReason).toBe("invalid message");
+  });
+
   test("clears presence and cursor state when a collaborator disconnects", async () => {
     const room = new Room("test");
     const first = socket();
@@ -221,7 +239,7 @@ describe("Room", () => {
     };
     room.connect(ws as never);
     events.length = 0;
-    room.beforeHistoryBroadcast = async () => {
+    room.beforeStateBroadcast = async () => {
       events.push("persist");
     };
 
@@ -242,7 +260,7 @@ describe("Room", () => {
     const ws = socket();
     room.connect(ws as never);
     ws.sent = [];
-    room.beforeHistoryBroadcast = async (state) => {
+    room.beforeStateBroadcast = async (state) => {
       expect(state.document.text).toBe("a");
       expect(state.operations).toEqual([
         { id: 0, operation: [{ type: "insert", text: "a" }] },
@@ -291,6 +309,127 @@ describe("Room", () => {
     );
     expect(second.closeCode).toBe(1003);
     expect(room.users.size).toBe(0);
+  });
+
+  test("persists language before committing or broadcasting it", async () => {
+    const room = new Room("test");
+    const ws = socket();
+    room.connect(ws as never);
+    ws.sent = [];
+    const events: string[] = [];
+    room.beforeStateBroadcast = async (state) => {
+      expect(room.language).toBe("plaintext");
+      expect(state.document.language).toBe("python");
+      events.push("persist");
+    };
+    ws.send = (message) => {
+      events.push("send");
+      ws.sent.push(message);
+    };
+
+    await room.handle(
+      ws as never,
+      JSON.stringify({ type: "setLanguage", language: "python" }),
+    );
+
+    expect(room.language).toBe("python");
+    expect(events).toEqual(["persist", "send"]);
+
+    await room.handle(
+      ws as never,
+      JSON.stringify({ type: "setLanguage", language: "python" }),
+    );
+    expect(events).toEqual(["persist", "send"]);
+  });
+
+  test("does not commit or broadcast language when persistence fails", async () => {
+    const room = new Room("test");
+    const ws = socket();
+    room.connect(ws as never);
+    ws.sent = [];
+    room.beforeStateBroadcast = async () => {
+      throw new Error("write failed");
+    };
+
+    await expect(
+      room.handle(
+        ws as never,
+        JSON.stringify({ type: "setLanguage", language: "python" }),
+      ),
+    ).rejects.toThrow("write failed");
+
+    expect(room.language).toBe("plaintext");
+    expect(ws.sent).toEqual([]);
+  });
+
+  test("rejects oversized messages before parsing them", async () => {
+    const room = new Room("test");
+    const ws = socket();
+
+    await room.handle(
+      ws as never,
+      `"${"😀".repeat(MAX_CLIENT_MESSAGE_LENGTH / 4 + 1)}"`,
+    );
+
+    expect(ws.closeCode).toBe(1009);
+    expect(ws.closeReason).toBe("message too large");
+  });
+
+  test("rejects edits with too many operation components", async () => {
+    const room = new Room("test");
+    const ws = socket();
+
+    await room.handle(
+      ws as never,
+      JSON.stringify({
+        type: "edit",
+        revision: 0,
+        operation: Array.from({ length: MAX_OPERATION_COMPONENTS + 1 }, () => ({
+          type: "retain",
+          count: 0,
+        })),
+      }),
+    );
+
+    expect(ws.closeCode).toBe(1003);
+    expect(room.operations).toEqual([]);
+  });
+
+  test("compacts operation history only after every socket disconnects", async () => {
+    const room = new Room("test");
+    const ws = socket();
+    room.connect(ws as never);
+    await room.handle(
+      ws as never,
+      JSON.stringify({
+        type: "edit",
+        revision: 0,
+        operation: [{ type: "insert", text: "a" }],
+      }),
+    );
+    await room.handle(
+      ws as never,
+      JSON.stringify({
+        type: "edit",
+        revision: 1,
+        operation: [
+          { type: "retain", count: 1 },
+          { type: "insert", text: "b" },
+        ],
+      }),
+    );
+
+    expect(room.compactHistory()).toBe(false);
+    room.disconnect(ws as never);
+    expect(room.compactHistory()).toBe(true);
+    expect(room.revision).toBe(1);
+    expect(room.operations).toEqual([
+      {
+        id: Number.MAX_SAFE_INTEGER,
+        operation: [{ type: "insert", text: "ab" }],
+      },
+    ]);
+    expect(room.compactHistory()).toBe(false);
   });
 
   test("rejects oversized or out-of-range cursor data", async () => {

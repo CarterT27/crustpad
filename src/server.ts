@@ -8,7 +8,6 @@ const persistedAccessTouchInterval = 5 * 60 * 1_000;
 const startTime = Math.floor(Date.now() / 1000);
 const store = new DocumentStore();
 const rooms = new Map<string, Room>();
-const persisters = new Map<string, Timer>();
 const persistedAccesses = new Map<string, number>();
 const publicDir = new URL("../dist/", import.meta.url);
 
@@ -32,7 +31,7 @@ function getRoom(id: string): Room {
     room.restoreOperations(persisted.operations);
   }
   rooms.set(id, room);
-  startPersister(id, room);
+  room.beforeStateBroadcast = async (state) => storeRoomState(id, state);
   return room;
 }
 
@@ -46,41 +45,10 @@ function touchPersistedAccess(id: string, lastAccessedAt: number): void {
   persistedAccesses.set(id, lastAccessedAt);
 }
 
-function startPersister(id: string, room: Room): void {
-  let lastRevision = room.revision;
-  room.beforeHistoryBroadcast = async (state) => {
-    storeRoomState(id, state);
-    lastRevision = state.operations.length;
-  };
-  const timer = setInterval(() => {
-    if (room.revision <= lastRevision) {
-      return;
-    }
-
-    storeRoomState(id, {
-      document: room.snapshot(),
-      operations: room.operations,
-      lastAccessedAt: room.lastAccessedAt,
-    });
-    lastRevision = room.revision;
-  }, 3_000);
-  timer.unref();
-  persisters.set(id, timer);
-}
-
 function removeRoom(id: string, room: Room): void {
-  storeRoomState(id, {
-    document: room.snapshot(),
-    operations: room.operations,
-    lastAccessedAt: room.lastAccessedAt,
-  });
+  storeCurrentRoom(id, room);
   persistedAccesses.delete(id);
   rooms.delete(id);
-  const timer = persisters.get(id);
-  if (timer) {
-    clearInterval(timer);
-    persisters.delete(id);
-  }
 }
 
 function storeRoomState(id: string, state: RoomPersistenceState): void {
@@ -91,6 +59,14 @@ function storeRoomState(id: string, state: RoomPersistenceState): void {
     state.lastAccessedAt,
   );
   persistedAccesses.set(id, state.lastAccessedAt);
+}
+
+function storeCurrentRoom(id: string, room: Room): void {
+  storeRoomState(id, {
+    document: room.snapshot(),
+    operations: room.operations,
+    lastAccessedAt: room.lastAccessedAt,
+  });
 }
 
 function expireRoomsAndDocuments(): void {
@@ -176,7 +152,15 @@ const server = Bun.serve<SocketData>({
       }
     },
     close(ws) {
-      rooms.get(ws.data.roomId)?.disconnect(ws);
+      const room = rooms.get(ws.data.roomId);
+      if (!room) {
+        return;
+      }
+
+      room.disconnect(ws);
+      if (room.compactHistory()) {
+        storeCurrentRoom(ws.data.roomId, room);
+      }
     },
   },
 });
