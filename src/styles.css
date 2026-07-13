@@ -263,14 +263,17 @@ select {
   background: transparent;
   color: inherit;
   text-align: left;
+}
+
+.user-row.editable {
   cursor: pointer;
 }
 
-.user-row:hover {
+.user-row.editable:hover {
   background: #e2e8f0;
 }
 
-.dark .user-row:hover {
+.dark .user-row.editable:hover {
   background: #464647;
 }
 

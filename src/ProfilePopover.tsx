@@ -1,22 +1,19 @@
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { FaPalette } from "react-icons/fa";
+import type { UserInfo } from "./protocol";
 
 type ProfilePopoverProps = {
-  draftName: string;
-  draftHue: number;
-  onChangeName: (name: string) => void;
-  onChangeHue: (hue: number) => void;
-  onCommit: () => void;
+  user: UserInfo;
+  onCommit: (user: UserInfo) => void;
 };
 
-export function ProfilePopover({
-  draftName,
-  draftHue,
-  onChangeName,
-  onChangeHue,
-  onCommit,
-}: ProfilePopoverProps) {
+export function ProfilePopover({ user, onCommit }: ProfilePopoverProps) {
   const backdropMouseDown = useRef(false);
+  const [draftName, setDraftName] = useState(user.name);
+  const [draftHue, setDraftHue] = useState(user.hue);
+  const commit = () => {
+    onCommit({ name: draftName.trim() || user.name, hue: draftHue });
+  };
 
   return (
     <div
@@ -26,14 +23,14 @@ export function ProfilePopover({
       }}
       onMouseUp={(event) => {
         if (backdropMouseDown.current && event.currentTarget === event.target) {
-          onCommit();
+          commit();
         }
         backdropMouseDown.current = false;
       }}
     >
       <div className="user-popover">
         <div className="popover-header">Update Info</div>
-        <button className="popover-close" type="button" onClick={onCommit}>
+        <button className="popover-close" type="button" onClick={commit}>
           x
         </button>
         <div className="popover-body">
@@ -41,24 +38,24 @@ export function ProfilePopover({
             autoFocus
             value={draftName}
             maxLength={25}
-            onChange={(event) => onChangeName(event.target.value)}
+            onChange={(event) => setDraftName(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Enter" || event.key === "Escape") {
                 event.preventDefault();
-                onCommit();
+                commit();
               }
             }}
           />
           <button
             type="button"
-            onClick={() => onChangeHue(Math.floor(Math.random() * 360))}
+            onClick={() => setDraftHue(Math.floor(Math.random() * 360))}
           >
             <FaPalette />
             Change Color
           </button>
         </div>
         <div className="popover-footer">
-          <button type="button" onClick={onCommit}>
+          <button type="button" onClick={commit}>
             Done
           </button>
         </div>

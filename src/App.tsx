@@ -1,6 +1,6 @@
 import Editor, { type OnMount } from "@monaco-editor/react";
 import type { editor } from "monaco-editor";
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   VscChevronRight,
   VscFolderOpened,
@@ -11,7 +11,7 @@ import useLocalStorageState from "use-local-storage-state";
 import { ProfilePopover } from "./ProfilePopover";
 import { OutputPanel, type RunPanelState } from "./OutputPanel";
 import { Sidebar } from "./Sidebar";
-import type { LanguageId } from "./protocol";
+import type { LanguageId, UserInfo } from "./protocol";
 import { canRunLanguage, runCode } from "./runner/run";
 import syncClientSource from "./syncClient.ts?raw";
 import { useRoomId } from "./useRoomId";
@@ -40,8 +40,6 @@ export default function App() {
   });
   const [user, setUser] = useStoredUser();
   const [editingMe, setEditingMe] = useState(false);
-  const [draftName, setDraftName] = useState("");
-  const [draftHue, setDraftHue] = useState(0);
   const [runResult, setRunResult] = useState<RunPanelState>({
     status: "idle",
     language: "plaintext",
@@ -51,6 +49,20 @@ export default function App() {
     editorInstance,
     roomId,
     user,
+  );
+  const editorOptions = useMemo(
+    () => ({
+      automaticLayout: true,
+      fontSize: 13,
+      detectIndentation: false,
+      insertSpaces: true,
+      minimap: { enabled: false },
+      readOnly: connection !== "connected",
+      scrollBeyondLastLine: false,
+      wordWrap: "on" as const,
+      tabSize: tabSizeForLanguage(language),
+    }),
+    [connection, language],
   );
 
   const handleMount: OnMount = (mountedEditor) => {
@@ -119,17 +131,11 @@ export default function App() {
   };
 
   const openProfileEditor = () => {
-    setDraftName(user.name);
-    setDraftHue(user.hue);
     setEditingMe(true);
   };
 
-  const commitProfileEditor = () => {
-    const nextName = draftName.trim();
-    setUser({
-      name: nextName.length > 0 ? nextName : user.name,
-      hue: draftHue,
-    });
+  const commitProfileEditor = (nextUser: UserInfo) => {
+    setUser(nextUser);
     setEditingMe(false);
   };
 
@@ -142,14 +148,7 @@ export default function App() {
           darkMode={darkMode}
           language={language}
           shareHref={window.location.href}
-          currentUser={
-            editingMe
-              ? {
-                  name: user.name,
-                  hue: draftHue,
-                }
-              : user
-          }
+          currentUser={user}
           remoteUsers={users}
           onChangeDarkMode={setDarkMode}
           onChangeLanguage={setLanguage}
@@ -179,17 +178,7 @@ export default function App() {
             <Editor
               theme={darkMode ? "vs-dark" : "vs"}
               language={language}
-              options={{
-                automaticLayout: true,
-                fontSize: 13,
-                detectIndentation: false,
-                insertSpaces: true,
-                minimap: { enabled: false },
-                readOnly: connection !== "connected",
-                scrollBeyondLastLine: false,
-                wordWrap: "on",
-                tabSize: tabSizeForLanguage(language),
-              }}
+              options={editorOptions}
               onMount={handleMount}
             />
           </div>
@@ -199,10 +188,7 @@ export default function App() {
       <Footer />
       {editingMe ? (
         <ProfilePopover
-          draftName={draftName}
-          draftHue={draftHue}
-          onChangeName={setDraftName}
-          onChangeHue={setDraftHue}
+          user={user}
           onCommit={commitProfileEditor}
         />
       ) : null}

@@ -22,8 +22,10 @@ function currentRoomId(): string {
   return id;
 }
 
+const initialRoomId = currentRoomId();
+
 export function useRoomId(): string {
-  const [roomId, setRoomId] = useState(currentRoomId);
+  const [roomId, setRoomId] = useState(initialRoomId);
 
   useEffect(() => {
     const onPopState = () => setRoomId(currentRoomId());

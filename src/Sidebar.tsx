@@ -170,11 +170,19 @@ function UserRow({
   onClick?: () => void;
 }) {
   const nameColor = `hsl(${user.hue}, 90%, ${darkMode ? "70%" : "25%"})`;
-  return (
-    <button className="user-row" type="button" onClick={onClick}>
+  const content = (
+    <>
       <VscAccount />
       <span style={{ color: nameColor }}>{user.name}</span>
       {isMe ? <span className="you-label">(you)</span> : null}
+    </>
+  );
+
+  return onClick ? (
+    <button className="user-row editable" type="button" onClick={onClick}>
+      {content}
     </button>
+  ) : (
+    <div className="user-row">{content}</div>
   );
 }
