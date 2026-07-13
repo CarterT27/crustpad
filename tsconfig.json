@@ -10,5 +10,5 @@
     "noEmit": true
   },
   "include": ["src", "tests"],
-  "exclude": ["src/worker.ts"]
+  "exclude": ["src/worker.ts", "tests/worker.integration.vitest.ts"]
 }

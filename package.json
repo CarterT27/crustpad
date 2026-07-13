@@ -11,7 +11,8 @@
     "dev:client": "vite --host 0.0.0.0",
     "dev:server": "wrangler dev",
     "start": "wrangler dev",
-    "test": "bun test"
+    "test": "bun test",
+    "test:worker": "vitest run"
   },
   "dependencies": {
     "@eduoj/wasm-clang": "^1.0.0",
@@ -28,11 +29,13 @@
     "vite": "^8.0.10"
   },
   "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.18.4",
     "@cloudflare/workers-types": "^4.20260503.1",
     "@types/bun": "^1.3.14",
     "@types/lodash.debounce": "^4.0.9",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
+    "vitest": "^4.1.0",
     "wrangler": "^4.87.0"
   }
 }

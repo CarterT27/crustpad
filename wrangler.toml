@@ -11,6 +11,17 @@ run_worker_first = true
 [vars]
 EXPIRY_DAYS = "1"
 
+[observability]
+enabled = true
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+
+[observability.traces]
+enabled = true
+head_sampling_rate = 0.01
+
 [[durable_objects.bindings]]
 name = "ROOMS"
 class_name = "RoomObject"
