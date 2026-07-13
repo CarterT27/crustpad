@@ -1,5 +1,7 @@
+import { useState } from "react";
 import {
   VscAccount,
+  VscChromeClose,
   VscCloudDownload,
   VscCircleFilled,
   VscRepo,
@@ -24,6 +26,8 @@ type SidebarProps = {
   onRun: () => void;
   runDisabled: boolean;
   running: boolean;
+  mobileOpen: boolean;
+  onCloseMobile: () => void;
 };
 
 export function Sidebar({
@@ -41,19 +45,42 @@ export function Sidebar({
   onRun,
   runDisabled,
   running,
+  mobileOpen,
+  onCloseMobile,
 }: SidebarProps) {
-  const handleCopyShareLink = () => {
-    void navigator.clipboard?.writeText(shareHref);
+  const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "failed">(
+    "idle",
+  );
+  const handleCopyShareLink = async () => {
+    try {
+      if (!navigator.clipboard) throw new Error("Clipboard unavailable");
+      await navigator.clipboard.writeText(shareHref);
+      setCopyStatus("copied");
+    } catch {
+      setCopyStatus("failed");
+    }
   };
 
   return (
-    <aside className="sidebar">
+    <aside
+      className={`sidebar${mobileOpen ? " open" : ""}`}
+      id="collaboration-sidebar"
+    >
+      <button
+        aria-label="Close controls"
+        className="sidebar-close"
+        type="button"
+        onClick={onCloseMobile}
+      >
+        <VscChromeClose />
+      </button>
       <ConnectionStatus connection={connection} darkMode={darkMode} />
 
       <div className="sidebar-row">
         <h2>Dark Mode</h2>
         <label className="switch">
           <input
+            aria-label="Dark mode"
             type="checkbox"
             checked={darkMode}
             onChange={() => onChangeDarkMode(!darkMode)}
@@ -64,8 +91,10 @@ export function Sidebar({
 
       <h2>Language</h2>
       <select
+        aria-label="Language"
         className="rustpad-select"
         value={language}
+        disabled={connection !== "connected"}
         onChange={(event) => onChangeLanguage(event.target.value as LanguageId)}
       >
         {languages.map((item) => (
@@ -92,18 +121,34 @@ export function Sidebar({
 
       <h2>Share Link</h2>
       <div className="share-link">
-        <input readOnly value={shareHref} />
+        <input aria-label="Share link" readOnly value={shareHref} />
         <button
           type="button"
           onClick={handleCopyShareLink}
         >
-          Copy
+          {copyStatus === "copied"
+            ? "Copied"
+            : copyStatus === "failed"
+              ? "Retry"
+              : "Copy"}
         </button>
       </div>
+      <span className="copy-status" aria-live="polite">
+        {copyStatus === "copied"
+          ? "Share link copied"
+          : copyStatus === "failed"
+            ? "Could not copy share link"
+            : ""}
+      </span>
 
       <h2>Active Users</h2>
       <div className="user-list">
-        <UserRow user={currentUser} darkMode={darkMode} isMe onClick={onEditUser} />
+        <UserRow
+          user={currentUser}
+          darkMode={darkMode}
+          isMe
+          onClick={onEditUser}
+        />
         {Object.entries(remoteUsers).map(([id, info]) => (
           <UserRow key={id} user={info} darkMode={darkMode} />
         ))}

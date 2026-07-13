@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { UserInfo } from "./protocol";
+import { isUserInfo, type UserInfo } from "./protocol";
 
 const names = [
   "Anonymous Abel",
@@ -84,29 +84,14 @@ function parseJson(value: string | null): unknown {
 
 function parseUser(value: string | null): UserInfo | undefined {
   const parsed = parseJson(value);
-  if (
-    parsed &&
-    typeof parsed === "object" &&
-    typeof (parsed as UserInfo).name === "string" &&
-    Number.isSafeInteger((parsed as UserInfo).hue)
-  ) {
-    return parsed as UserInfo;
-  }
-
-  return undefined;
+  return isUserInfo(parsed) ? parsed : undefined;
 }
 
 function loadStoredUser(): UserInfo {
   const legacyName = parseJson(window.localStorage.getItem("name"));
   const legacyHue = parseJson(window.localStorage.getItem("hue"));
-  if (
-    typeof legacyName === "string" &&
-    legacyName.length > 0 &&
-    typeof legacyHue === "number" &&
-    Number.isSafeInteger(legacyHue)
-  ) {
-    return { name: legacyName, hue: legacyHue };
-  }
+  const legacyUser = { name: legacyName, hue: legacyHue };
+  if (isUserInfo(legacyUser)) return legacyUser;
 
   return parseUser(window.localStorage.getItem("crustpad:user")) ?? randomUser();
 }

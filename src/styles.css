@@ -58,6 +58,7 @@ select {
 }
 
 .workspace {
+  position: relative;
   display: flex;
   flex: 1 1 auto;
   min-height: 0;
@@ -85,6 +86,11 @@ select {
   align-items: center;
   gap: 4px;
   margin-bottom: 22px;
+}
+
+.sidebar-close,
+.mobile-toolbar {
+  display: none;
 }
 
 .connection-dot.connected {
@@ -197,6 +203,11 @@ select {
   color: black;
 }
 
+.rustpad-select:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .share-link {
   position: relative;
   display: flex;
@@ -245,6 +256,18 @@ select {
 .dark .share-link button {
   background: #575759;
   color: white;
+}
+
+.copy-status {
+  display: block;
+  min-height: 18px;
+  margin-top: 3px;
+  color: #718096;
+  font-size: 12px;
+}
+
+.dark .copy-status {
+  color: #cbd5e0;
 }
 
 .user-list {
@@ -366,11 +389,25 @@ select {
 }
 
 .desync {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   flex-shrink: 0;
   padding: 8px 14px;
   color: #742a2a;
   background: #fed7d7;
   font-size: 13px;
+}
+
+.desync button {
+  flex: 0 0 auto;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  padding: 4px 8px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
 }
 
 .dark .desync {
@@ -513,22 +550,22 @@ select {
   font-size: 12px;
 }
 
-.popover-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 20;
-}
-
 .user-popover {
-  position: absolute;
+  position: fixed;
   top: 218px;
   left: 270px;
   width: 320px;
+  margin: 0;
   border: 1px solid #e2e8f0;
   border-radius: 6px;
+  padding: 0;
   background: white;
   color: #1a202c;
   box-shadow: 0 10px 30px rgb(0 0 0 / 18%);
+}
+
+.user-popover::backdrop {
+  background: rgb(0 0 0 / 12%);
 }
 
 .dark .user-popover {
@@ -570,6 +607,13 @@ select {
   padding: 12px;
 }
 
+.popover-body label {
+  display: block;
+  margin-bottom: 5px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
 .popover-body input {
   width: 100%;
   height: 36px;
@@ -605,14 +649,81 @@ select {
   color: white;
 }
 
+.popover-footer .popover-cancel {
+  margin-right: 8px;
+  background: #edf2f7;
+  color: #1a202c;
+}
+
 .dark .popover-body button {
+  background: rgba(255, 255, 255, 0.12);
+  color: white;
+}
+
+.dark .popover-footer .popover-cancel {
   background: rgba(255, 255, 255, 0.12);
   color: white;
 }
 
 @media (max-width: 640px) {
   .sidebar {
+    position: absolute;
+    inset: 0 auto 0 0;
+    z-index: 10;
     display: none;
+    width: min(20rem, calc(100% - 48px));
+    box-shadow: 6px 0 18px rgb(0 0 0 / 18%);
+  }
+
+  .sidebar.open {
+    display: block;
+  }
+
+  .sidebar-close {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    display: inline-flex;
+    border: 0;
+    padding: 5px;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+  }
+
+  .mobile-toolbar {
+    display: flex;
+    min-height: 32px;
+    flex: 0 0 auto;
+    align-items: center;
+    border-bottom: 1px solid #e4e4e4;
+    padding: 0 8px;
+  }
+
+  .dark .mobile-toolbar {
+    border-color: #333333;
+  }
+
+  .mobile-toolbar button {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    border: 0;
+    padding: 4px 6px;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+  }
+
+  .desync {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .user-popover {
+    top: 64px;
+    left: 16px;
+    width: calc(100% - 32px);
   }
 
   .output-panel {

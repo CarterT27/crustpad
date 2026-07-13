@@ -5,6 +5,7 @@ import {
   VscChevronRight,
   VscFolderOpened,
   VscGist,
+  VscMenu,
   VscRemote,
 } from "react-icons/vsc";
 import useLocalStorageState from "use-local-storage-state";
@@ -40,6 +41,7 @@ export default function App() {
   });
   const [user, setUser] = useStoredUser();
   const [editingMe, setEditingMe] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [runResult, setRunResult] = useState<RunPanelState>({
     status: "idle",
     language: "plaintext",
@@ -158,9 +160,22 @@ export default function App() {
           onRun={handleRun}
           runDisabled={!canRunLanguage(language) || runResult.status === "running"}
           running={runResult.status === "running"}
+          mobileOpen={sidebarOpen}
+          onCloseMobile={() => setSidebarOpen(false)}
         />
 
         <section className="main-pane">
+          <div className="mobile-toolbar">
+            <button
+              type="button"
+              aria-controls="collaboration-sidebar"
+              aria-expanded={sidebarOpen}
+              onClick={() => setSidebarOpen((open) => !open)}
+            >
+              <VscMenu />
+              Controls
+            </button>
+          </div>
           <div className="breadcrumb">
             <VscFolderOpened className="folder-icon" />
             <span>documents</span>
@@ -170,8 +185,13 @@ export default function App() {
           </div>
           {connection === "desynchronized" ? (
             <div className="desync">
-              This tab fell out of sync with the server. Refresh before editing
-              more.
+              <span>
+                Changes in this tab could not be synchronized. Download a local
+                copy before refreshing.
+              </span>
+              <button type="button" onClick={handleDownload}>
+                Download local copy
+              </button>
             </div>
           ) : null}
           <div className="editor-frame">
@@ -190,6 +210,7 @@ export default function App() {
         <ProfilePopover
           user={user}
           onCommit={commitProfileEditor}
+          onCancel={() => setEditingMe(false)}
         />
       ) : null}
     </main>

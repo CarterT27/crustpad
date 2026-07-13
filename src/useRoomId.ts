@@ -1,14 +1,7 @@
 import { useEffect, useState } from "react";
 
-const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-const idLength = 6;
-
 function generateRoomId(): string {
-  let id = "";
-  for (let i = 0; i < idLength; i += 1) {
-    id += chars[Math.floor(Math.random() * chars.length)];
-  }
-  return id;
+  return crypto.randomUUID().replaceAll("-", "");
 }
 
 function currentRoomId(): string {
