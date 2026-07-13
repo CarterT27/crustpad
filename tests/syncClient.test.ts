@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { apply, transform, type OperationSeq } from "../src/ot";
 import type { ServerMsg } from "../src/protocol";
 import { SyncClient } from "../src/syncClient";
 
@@ -104,7 +105,14 @@ describe("SyncClient connection state", () => {
     expect(disconnected).toBe(0);
     expect(desynchronized).toBe(1);
 
+    const afterClose = makeBeforeUnloadEvent();
+    dispatchWindowEvent(afterClose);
+    expect(afterClose.prevented).toBe(true);
+
     client.dispose();
+    const afterDispose = makeBeforeUnloadEvent();
+    dispatchWindowEvent(afterDispose);
+    expect(afterDispose.prevented).toBe(false);
   });
 
   test("desynchronizes on incompatible history instead of applying partial state", () => {
@@ -335,6 +343,46 @@ describe("SyncClient collaborative editing", () => {
     client.dispose();
   });
 
+  test("flushes cursor state deferred behind a buffered edit", () => {
+    installDom();
+    const editor = new FakeEditor();
+    const client = new SyncClient({
+      uri: "ws://example.test/api/socket/room",
+      editor: editor as never,
+    });
+    const ws = FakeWebSocket.instances[0];
+    ws.serverOpen();
+    ws.serverMessage({ type: "identity", id: 1 });
+    ws.serverMessage({ type: "history", start: 0, operations: [] });
+    ws.sent = [];
+
+    editor.localInsert(0, "a");
+    editor.localInsert(1, "b");
+    Object.assign(client as unknown as { cursorData: unknown }, {
+      cursorData: { cursors: [2], selections: [[0, 2]] },
+    });
+    (
+      client as unknown as {
+        sendCursorData(): void;
+      }
+    ).sendCursorData();
+
+    expect(sentMessages(ws).filter(isCursorMessage)).toEqual([]);
+    ws.serverMessage({
+      type: "history",
+      start: 0,
+      operations: [{ id: 1, operation: [{ type: "insert", text: "a" }] }],
+    });
+
+    expect(sentMessages(ws).filter(isCursorMessage)).toEqual([
+      {
+        type: "cursorData",
+        data: { cursors: [2], selections: [[0, 2]] },
+      },
+    ]);
+    client.dispose();
+  });
+
   test("transforms undo through later remote edits", () => {
     installDom();
     const editor = new FakeEditor();
@@ -439,6 +487,101 @@ describe("SyncClient collaborative editing", () => {
     editor.keyDown({ metaKey: true, keyCode: MONACO_KEY_CODE_Z });
 
     expect(editor.model.getValue()).toBe("");
+
+    client.dispose();
+  });
+
+  test("groups consecutive typing and exposes undo and redo as editor actions", () => {
+    installDom();
+    const editor = new FakeEditor();
+    const client = new SyncClient({
+      uri: "ws://example.test/api/socket/room",
+      editor: editor as never,
+    });
+    const ws = FakeWebSocket.instances[0];
+    ws.serverOpen();
+    ws.serverMessage({ type: "identity", id: 1 });
+
+    editor.localInsert(0, "a");
+    editor.localInsert(1, "b");
+    editor.localInsert(2, "c");
+    editor.runAction("crustpad.undo");
+    expect(editor.model.getValue()).toBe("");
+    editor.model.redo();
+    expect(editor.model.getValue()).toBe("abc");
+    editor.model.undo();
+    expect(editor.model.getValue()).toBe("");
+    editor.runAction("crustpad.redo");
+    expect(editor.model.getValue()).toBe("abc");
+
+    client.dispose();
+  });
+
+  test("converges through seeded concurrent edits with undo and redo", () => {
+    installDom();
+    const editor = new FakeEditor();
+    const client = new SyncClient({
+      uri: "ws://example.test/api/socket/room",
+      editor: editor as never,
+    });
+    const ws = FakeWebSocket.instances[0];
+    ws.serverOpen();
+    ws.serverMessage({ type: "identity", id: 1 });
+    ws.serverMessage({ type: "history", start: 0, operations: [] });
+
+    let seed = 7;
+    let revision = 0;
+    let serverText = "";
+    const random = () => (seed = (seed * 48271) % 0x7fffffff) / 0x7fffffff;
+    const acknowledgeLatestEdit = () => {
+      const message = sentMessages(ws).filter(isEditMessage).at(-1);
+      if (!message) {
+        throw new Error("missing edit");
+      }
+      serverText = apply(serverText, message.operation);
+      ws.serverMessage({
+        type: "history",
+        start: revision,
+        operations: [{ id: 1, operation: message.operation }],
+      });
+      revision += 1;
+    };
+
+    for (let index = 0; index < 20; index += 1) {
+      const localOffset = Math.floor(random() * (serverText.length + 1));
+      editor.localInsert(localOffset, String.fromCharCode(97 + (index % 26)));
+      const local = sentMessages(ws).filter(isEditMessage).at(-1);
+      if (!local) {
+        throw new Error("missing local edit");
+      }
+
+      const remoteOffset = Math.floor(random() * (serverText.length + 1));
+      const remote = insertOperation(serverText.length, remoteOffset, "R");
+      const [localPrime] = transform(local.operation, remote);
+      serverText = apply(apply(serverText, remote), localPrime);
+      ws.serverMessage({
+        type: "history",
+        start: revision,
+        operations: [{ id: 2, operation: remote }],
+      });
+      revision += 1;
+      ws.serverMessage({
+        type: "history",
+        start: revision,
+        operations: [{ id: 1, operation: localPrime }],
+      });
+      revision += 1;
+      expect(editor.model.getValue()).toBe(serverText);
+
+      if (index % 4 === 3) {
+        editor.runAction("crustpad.undo");
+        acknowledgeLatestEdit();
+        expect(editor.model.getValue()).toBe(serverText);
+        editor.runAction("crustpad.redo");
+        acknowledgeLatestEdit();
+        expect(editor.model.getValue()).toBe(serverText);
+      }
+    }
 
     client.dispose();
   });
@@ -560,9 +703,9 @@ class FakeWebSocket {
 
 class FakeEditor {
   readonly model = new FakeModel();
+  private readonly actions = new Map<string, () => void>();
   private readonly changeListeners = new Set<(event: { changes: Change[] }) => void>();
   private readonly cursorListeners = new Set<(event: unknown) => void>();
-  private readonly keyListeners = new Set<(event: FakeKeyEvent) => void>();
   private readonly selectionListeners = new Set<(event: unknown) => void>();
 
   getModel(): FakeModel {
@@ -583,24 +726,20 @@ class FakeEditor {
       keyCode: 0,
       metaKey: false,
       shiftKey: false,
-      prevented: false,
-      stopped: false,
-      preventDefault() {
-        this.prevented = true;
-      },
-      stopPropagation() {
-        this.stopped = true;
-      },
       ...event,
     };
-    for (const listener of this.keyListeners) {
-      listener(keyEvent);
+    if ((keyEvent.ctrlKey || keyEvent.metaKey) && keyEvent.keyCode === 56) {
+      this.runAction(keyEvent.shiftKey ? "crustpad.redo" : "crustpad.undo");
     }
   }
 
-  onKeyDown(listener: (event: FakeKeyEvent) => void) {
-    this.keyListeners.add(listener);
-    return disposable(() => this.keyListeners.delete(listener));
+  addAction(action: { id: string; run: () => void }) {
+    this.actions.set(action.id, action.run);
+    return disposable(() => this.actions.delete(action.id));
+  }
+
+  runAction(id: string): void {
+    this.actions.get(id)?.();
   }
 
   onDidChangeCursorPosition(listener: (event: unknown) => void) {
@@ -631,15 +770,15 @@ type FakeKeyEvent = {
   keyCode: number;
   metaKey: boolean;
   shiftKey: boolean;
-  prevented: boolean;
-  stopped: boolean;
-  preventDefault(): void;
-  stopPropagation(): void;
 };
 
 class FakeModel {
   applyEditsUndoFlags: unknown[] = [];
   private text = "";
+
+  undo(): void {}
+
+  redo(): void {}
 
   applyEdits(
     edits: Array<{
@@ -711,4 +850,26 @@ function dispatchWindowEvent(event: unknown): void {
 
 function sentMessages(ws: FakeWebSocket): unknown[] {
   return ws.sent.map((message) => JSON.parse(message));
+}
+
+function isCursorMessage(
+  message: unknown,
+): message is { type: "cursorData"; data: unknown } {
+  return (message as { type?: string }).type === "cursorData";
+}
+
+function isEditMessage(
+  message: unknown,
+): message is { type: "edit"; revision: number; operation: OperationSeq } {
+  return (message as { type?: string }).type === "edit";
+}
+
+function insertOperation(length: number, offset: number, text: string): OperationSeq {
+  return [
+    ...(offset ? [{ type: "retain" as const, count: offset }] : []),
+    { type: "insert", text },
+    ...(length - offset
+      ? [{ type: "retain" as const, count: length - offset }]
+      : []),
+  ];
 }

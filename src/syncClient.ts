@@ -19,7 +19,10 @@ import type {
 
 const MONACO_KEY_CODE_Y = 55;
 const MONACO_KEY_CODE_Z = 56;
+const MONACO_CTRL_CMD = 2048;
+const MONACO_SHIFT = 1024;
 const MAX_RECONNECT_DELAY = 30_000;
+const UNDO_GROUP_DELAY = 1000;
 
 export type SyncClientOptions = {
   uri: string;
@@ -43,18 +46,23 @@ export class SyncClient {
   private readonly model: editor.ITextModel;
   private readonly onChangeHandle: IDisposable;
   private readonly onCursorHandle: IDisposable;
-  private readonly onKeyDownHandle: IDisposable;
   private readonly onSelectionHandle: IDisposable;
+  private readonly undoActionHandle: IDisposable;
+  private readonly redoActionHandle: IDisposable;
+  private readonly modelUndo: editor.ITextModel["undo"];
+  private readonly modelRedo: editor.ITextModel["redo"];
   private readonly beforeUnload: (event: BeforeUnloadEvent) => void;
   private readonly tryConnectId: number;
-  private readonly resetFailuresId: number;
 
   private me = -1;
   private revision = 0;
   private outstanding?: OperationSeq;
   private buffer?: OperationSeq;
+  private unsavedChanges = false;
+  private cursorPending = false;
   private undoStack: OperationSeq[] = [];
   private redoStack: OperationSeq[] = [];
+  private typingGroup?: { end: number; at: number };
   private users: Record<number, UserInfo> = {};
   private userCursors: Record<number, CursorData> = {};
   private myInfo?: UserInfo;
@@ -71,29 +79,28 @@ export class SyncClient {
     }
 
     this.model = model;
+    this.modelUndo = model.undo;
+    this.modelRedo = model.redo;
+    model.undo = () => this.undo();
+    model.redo = () => this.redo();
     this.lastValue = model.getValue();
     this.onChangeHandle = options.editor.onDidChangeModelContent((event) =>
       this.onChange(event),
     );
-    this.onKeyDownHandle = options.editor.onKeyDown((event) => {
-      const shortcut = event.ctrlKey || event.metaKey;
-      if (!shortcut) {
-        return;
-      }
-
-      if (event.keyCode === MONACO_KEY_CODE_Z) {
-        event.preventDefault();
-        event.stopPropagation();
-        if (event.shiftKey) {
-          this.redo();
-        } else {
-          this.undo();
-        }
-      } else if (event.keyCode === MONACO_KEY_CODE_Y) {
-        event.preventDefault();
-        event.stopPropagation();
-        this.redo();
-      }
+    this.undoActionHandle = options.editor.addAction({
+      id: "crustpad.undo",
+      label: "Undo",
+      keybindings: [MONACO_CTRL_CMD | MONACO_KEY_CODE_Z],
+      run: () => this.undo(),
+    });
+    this.redoActionHandle = options.editor.addAction({
+      id: "crustpad.redo",
+      label: "Redo",
+      keybindings: [
+        MONACO_CTRL_CMD | MONACO_KEY_CODE_Y,
+        MONACO_CTRL_CMD | MONACO_SHIFT | MONACO_KEY_CODE_Z,
+      ],
+      run: () => this.redo(),
     });
 
     const cursorUpdate = debounce(() => this.sendCursorData(), 20);
@@ -107,7 +114,7 @@ export class SyncClient {
     });
 
     this.beforeUnload = (event: BeforeUnloadEvent) => {
-      if (this.outstanding) {
+      if (this.unsavedChanges) {
         event.preventDefault();
         event.returnValue = "";
       } else {
@@ -120,25 +127,27 @@ export class SyncClient {
     this.reconnectInterval = interval;
     this.tryConnect();
     this.tryConnectId = window.setInterval(() => this.tryConnect(), interval);
-    this.resetFailuresId = window.setInterval(
-      () => (this.recentFailures = 0),
-      15 * interval,
-    );
   }
 
   dispose(): void {
+    this.stop();
+    window.removeEventListener("beforeunload", this.beforeUnload);
+  }
+
+  private stop(): void {
     if (this.disposed) {
       return;
     }
 
     this.disposed = true;
     window.clearInterval(this.tryConnectId);
-    window.clearInterval(this.resetFailuresId);
     this.onSelectionHandle.dispose();
-    this.onKeyDownHandle.dispose();
+    this.redoActionHandle.dispose();
+    this.undoActionHandle.dispose();
     this.onCursorHandle.dispose();
     this.onChangeHandle.dispose();
-    window.removeEventListener("beforeunload", this.beforeUnload);
+    this.model.undo = this.modelUndo;
+    this.model.redo = this.modelRedo;
 
     const ws = this.ws;
     this.ws = undefined;
@@ -244,7 +253,10 @@ export class SyncClient {
   }
 
   private desynchronize(): void {
-    this.dispose();
+    this.stop();
+    if (!this.unsavedChanges) {
+      window.removeEventListener("beforeunload", this.beforeUnload);
+    }
     this.options.onDesynchronized?.();
   }
 
@@ -337,10 +349,16 @@ export class SyncClient {
     this.buffer = undefined;
     if (this.outstanding) {
       this.sendOperation(this.outstanding);
+    } else {
+      this.unsavedChanges = false;
+    }
+    if (this.cursorPending) {
+      this.sendCursorData();
     }
   }
 
   private applyServer(operation: OperationSeq): void {
+    this.typingGroup = undefined;
     if (this.outstanding) {
       let pair = transform(this.outstanding, operation);
       this.outstanding = pair[0];
@@ -360,6 +378,7 @@ export class SyncClient {
       return;
     }
 
+    this.unsavedChanges = true;
     if (!this.ws) {
       this.desynchronize();
       return;
@@ -396,9 +415,12 @@ export class SyncClient {
   }
 
   private sendCursorData(): void {
-    if (!this.buffer) {
-      this.send({ type: "cursorData", data: this.cursorData });
+    if (this.buffer) {
+      this.cursorPending = true;
+      return;
     }
+    this.cursorPending = false;
+    this.send({ type: "cursorData", data: this.cursorData });
   }
 
   private send(message: ClientMsg): boolean {
@@ -549,7 +571,26 @@ export class SyncClient {
     const before = this.lastValue;
     const operation = operationFromChangeEvent(this.lastValue, event);
     if (!isNoop(operation)) {
-      this.undoStack.push(invertOperation(before, operation));
+      const inverse = invertOperation(before, operation);
+      const change = event.changes.length === 1 ? event.changes[0] : undefined;
+      const typing =
+        change?.rangeLength === 0 && unicodeLength(change.text) === 1
+          ? { end: change.rangeOffset + change.text.length, at: Date.now() }
+          : undefined;
+      const previous = this.undoStack.at(-1);
+      const typingGroup = this.typingGroup;
+      if (
+        previous &&
+        typing &&
+        typingGroup &&
+        typingGroup.end === change?.rangeOffset &&
+        typing.at - typingGroup.at <= UNDO_GROUP_DELAY
+      ) {
+        this.undoStack[this.undoStack.length - 1] = compose(inverse, previous);
+      } else {
+        this.undoStack.push(inverse);
+      }
+      this.typingGroup = typing;
       this.redoStack = [];
     }
     this.applyClient(operation);
@@ -572,6 +613,7 @@ export class SyncClient {
   }
 
   private undo(): void {
+    this.typingGroup = undefined;
     const operation = this.undoStack.pop();
     if (operation) {
       this.applyHistoryOperation(operation, "redo");
@@ -579,6 +621,7 @@ export class SyncClient {
   }
 
   private redo(): void {
+    this.typingGroup = undefined;
     const operation = this.redoStack.pop();
     if (operation) {
       this.applyHistoryOperation(operation, "undo");
