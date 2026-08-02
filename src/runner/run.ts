@@ -23,6 +23,20 @@ const workerFactories: Record<RunnableLanguage, () => Worker> = {
 
 let pythonWorker: Worker | undefined;
 
+// ponytail: probe compiles an 8-byte module; catches CSP/policy blocks that a
+// typeof check misses. Add per-worker probes only if main-thread CSP ever diverges.
+function wasmEnabled(): boolean {
+  try {
+    return (
+      new WebAssembly.Instance(
+        new WebAssembly.Module(Uint8Array.of(0, 0x61, 0x73, 0x6d, 1, 0, 0, 0)),
+      ) instanceof WebAssembly.Instance
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function canRunLanguage(language: LanguageId): language is RunnableLanguage {
   return language in workerFactories;
 }
@@ -46,6 +60,19 @@ export function runCode({
       language,
       stdout: "",
       stderr: "",
+      timedOut: false,
+      outputTruncated: false,
+    });
+  }
+
+  if (language !== "javascript" && !wasmEnabled()) {
+    return Promise.resolve({
+      status: "error",
+      language,
+      stdout: "",
+      stderr: "",
+      error:
+        "WebAssembly is disabled in this browser (often by an IT policy or extension). JavaScript still runs; ask your admin to allow WebAssembly for this site.",
       timedOut: false,
       outputTruncated: false,
     });
